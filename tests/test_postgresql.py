@@ -11,11 +11,19 @@ from pydbzengine import Properties, DebeziumJsonEngine
 
 
 class TestChangeHandler(BasePythonChangeHandler):
+    """
+    An example implementation of a handler class, where we need to process the data received from java.
+    Used for testing only.
+    """
     LOGGER_NAME = "printHandler"
 
     def handleJsonBatch(self, records: List[ChangeEvent], committer: RecordCommitter):
         logging.getLogger(self.LOGGER_NAME).info(f"Received {len(records)} records")
         print(f"Received {len(records)} records")
+        print(f"Record 1 table: {records[0].destination()}")
+        print(f"Record 1 key: {records[0].key()}")
+        print(f"Record 1 value: {records[0].value()}")
+        print("--------------------------------------")
         for r in records:
             committer.markProcessed(r)
         committer.markBatchFinished()
