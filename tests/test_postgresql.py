@@ -50,7 +50,7 @@ class TestDebeziumJsonEngine(unittest.TestCase):
         props.setProperty("offset.storage.file.filename", self.OFFSET_FILE.as_posix())
         props.setProperty("max.batch.size", "2")
         props.setProperty("poll.interval.ms", "10000")
-        # props.setProperty("debezium.format.value.schemas.enable", "true")
+        props.setProperty("converter.schemas.enable", "false")
         props.setProperty("offset.flush.interval.ms", "1000")
         props.setProperty("database.server.name", "testc")
         props.setProperty("database.server.id", "1234")
@@ -60,10 +60,10 @@ class TestDebeziumJsonEngine(unittest.TestCase):
         props.setProperty("table.whitelist", "inventory.*")
         props.setProperty("replica.identity.autoset.values", "inventory.*:FULL")
         # // debezium unwrap message
-        props.setProperty("debezium.transforms", "unwrap")
-        props.setProperty("debezium.transforms.unwrap.type", "io.debezium.transforms.ExtractNewRecordState")
-        props.setProperty("debezium.transforms.unwrap.add.fields", "op,table,source.ts_ms,sourcedb,ts_ms")
-        props.setProperty("debezium.transforms.unwrap.delete.handling.mode", "rewrite")
+        props.setProperty("transforms", "unwrap")
+        props.setProperty("transforms.unwrap.type", "io.debezium.transforms.ExtractNewRecordState")
+        props.setProperty("transforms.unwrap.add.fields", "op,table,source.ts_ms,sourcedb,ts_ms")
+        props.setProperty("transforms.unwrap.delete.handling.mode", "rewrite")
         # props.setProperty("debezium.transforms.unwrap.drop.tombstones", "true")
         return props
 
