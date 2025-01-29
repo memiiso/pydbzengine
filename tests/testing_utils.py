@@ -6,7 +6,7 @@ def timeout_handler(signum, frame):
     raise TimeoutError("Thread timed out!")
 
 
-class TestUtil:
+class TestingUtils:
 
     @staticmethod
     def run_engine_async(engine, timeout_sec=22):
