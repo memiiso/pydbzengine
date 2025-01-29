@@ -27,8 +27,8 @@ class TestChangeHandler(BasePythonChangeHandler):
         committer.markBatchFinished()
 
 
-class TestDebeziumJsonEngine(BasePostgresqlTest):
-    def test_consuming(self):
+class TestBasePythonChangeHandler(BasePostgresqlTest):
+    def test_consuming_with_handler(self):
         props = self.get_props()
 
         with self.assertLogs(TestChangeHandler.LOGGER_NAME, level='INFO') as cm:
