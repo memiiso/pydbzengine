@@ -7,10 +7,11 @@ from pydbzengine import Properties
 
 
 class BasePostgresqlTest(unittest.TestCase):
-    OFFSET_FILE = Path(__file__).parent.joinpath('postgresql-offsets.dat')
+    CURRENT_DIR = Path(__file__).parent
+    OFFSET_FILE = CURRENT_DIR.joinpath('postgresql-offsets.dat')
     SOURCEDB = DbPostgresql()
 
-    def get_props(self):
+    def debezium_engine_props(self):
         props = Properties()
         props.setProperty("name", "engine")
         props.setProperty("snapshot.mode", "initial_only")

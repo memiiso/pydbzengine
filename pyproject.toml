@@ -22,10 +22,14 @@ classifiers = [
     "Programming Language :: Python :: 3",
 ]
 dependencies = [
-    "pyjnius==1.6.1"
+    "pyjnius==1.6.1",
+    "dlt>=1.5.0"
 ]
 [project.optional-dependencies]
-dev = ["testcontainers>=4.9.1"]
+dev = [
+    "testcontainers>=4.9.1",
+    "dlt[duckdb]>=1.5.0"
+]
 #[project.scripts]
 #debezium = "pydbzengine.__main__:main"
 
