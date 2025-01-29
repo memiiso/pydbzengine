@@ -4,7 +4,7 @@ from typing import List, Dict
 
 import dlt
 
-from pydbzengine import ChangeEvent, RecordCommitter, BasePythonChangeHandler
+from pydbzengine import ChangeEvent, BasePythonChangeHandler
 
 
 @dlt.source
@@ -33,10 +33,7 @@ class DltChangeHandler(BasePythonChangeHandler):
         self.dlt_pipeline = dlt_pipeline
         self.log = logging.getLogger(self.LOGGER_NAME)
 
-    def handleJsonBatch(self, records: List[ChangeEvent], committer: RecordCommitter):
+    def handleJsonBatch(self, records: List[ChangeEvent]):
         self.log.info(f"Received {len(records)} records")
         self.dlt_pipeline.run(debezium_source_events(records))
-        for e in records:
-            committer.markProcessed(e)
-        committer.markBatchFinished()
         self.log.info(f"Consumed {len(records)} records")

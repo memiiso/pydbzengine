@@ -4,8 +4,9 @@ from pathlib import Path
 from typing import List
 
 ################# INIT PYJNIUS ####################
-DEBEZIUM_JAVA_LIBS_DR = Path(__file__).parent.joinpath("debezium/libs/*").as_posix()
-CLASS_PATHS = [DEBEZIUM_JAVA_LIBS_DR]
+DEBEZIUM_JAVA_LIBS_DIR = Path(__file__).parent.joinpath("debezium/libs/*").as_posix()
+DEBEZIUM_CONF_DIR = Path(__file__).parent.joinpath("config").as_posix()
+CLASS_PATHS = [DEBEZIUM_JAVA_LIBS_DIR, DEBEZIUM_CONF_DIR]
 CONFIG_DIR = Path().cwd().joinpath('config')
 if CONFIG_DIR.is_dir() and CONFIG_DIR.exists():
     print(f"Adding classpath: {CONFIG_DIR.as_posix()}")
@@ -75,13 +76,12 @@ class BasePythonChangeHandler(ABC):
     this is pure python class which receives variables which are type of java reflection classes.
     """
 
-    def handleJsonBatch(self, records: List[ChangeEvent], committer: RecordCommitter):
+    def handleJsonBatch(self, records: List[ChangeEvent]):
         """
         receives events from java! both records and committer arguments are java reflection classes.
         here we can read generated json events, and consume them
 
         :param records: list of records. reflection of: org.apache.kafka.connect.connector.ConnectRecord
-        :param committer: reflection of: io.debezium.engine.DebeziumEngine$RecordCommitter
         :return:
         """
         raise NotImplementedError(
@@ -108,7 +108,10 @@ class PythonChangeConsumer(PythonJavaClass):
         :return:
         """
         try:
-            self.handler.handleJsonBatch(records=records, committer=committer)
+            self.handler.handleJsonBatch(records=records)
+            for e in records:
+                committer.markProcessed(e)
+            committer.markBatchFinished()
         except Exception as e:
             print("ERROR: failed to consume events in python")
             print(str(e))

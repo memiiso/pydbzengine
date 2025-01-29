@@ -2,6 +2,7 @@ pydbzengine.iml
 .idea
 dbzjava
 build
+tests/logs
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

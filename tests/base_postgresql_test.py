@@ -24,7 +24,6 @@ class BasePostgresqlTest(unittest.TestCase):
         props.setProperty("connector.class", "io.debezium.connector.postgresql.PostgresConnector")
         props.setProperty("offset.storage", "org.apache.kafka.connect.storage.FileOffsetBackingStore")
         props.setProperty("offset.storage.file.filename", self.OFFSET_FILE.as_posix())
-        props.setProperty("max.batch.size", "2")
         props.setProperty("poll.interval.ms", "10000")
         props.setProperty("converter.schemas.enable", "false")
         props.setProperty("offset.flush.interval.ms", "1000")

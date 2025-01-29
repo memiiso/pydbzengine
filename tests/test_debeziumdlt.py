@@ -6,7 +6,7 @@ import duckdb
 from base_postgresql_test import BasePostgresqlTest
 from pydbzengine import DebeziumJsonEngine
 from pydbzengine.debeziumdlt import DltChangeHandler
-from testing_utils import TestingUtils
+from pydbzengine.helper import Utils
 
 
 class TestDebeziumJsonEngine(BasePostgresqlTest):
@@ -32,7 +32,7 @@ class TestDebeziumJsonEngine(BasePostgresqlTest):
             # give the config and the handler class to the DebeziumJsonEngine
             engine = DebeziumJsonEngine(properties=props, handler=handler)
             # run async then interrupt after timeout time to test the result!
-            TestingUtils.run_engine_async(engine=engine, timeout_sec=120)
+            Utils.run_engine_async(engine=engine, timeout_sec=90)
 
         self.assertRegex(text=str(cm.output), expected_regex='.*Consumed.*records.*')
         # print the data ===========================

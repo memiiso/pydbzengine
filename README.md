@@ -24,7 +24,7 @@ A python Example:
 
 ```python
 from typing import List
-from pydbzengine import ChangeEvent, RecordCommitter, BasePythonChangeHandler
+from pydbzengine import ChangeEvent, BasePythonChangeHandler
 from pydbzengine import Properties, DebeziumJsonEngine
 
 
@@ -33,7 +33,7 @@ class TestChangeHandler(BasePythonChangeHandler):
     An example implementation of a handler class, where the data received from java is processed.
     """
 
-    def handleJsonBatch(self, records: List[ChangeEvent], committer: RecordCommitter):
+    def handleJsonBatch(self, records: List[ChangeEvent]):
         print(f"Received {len(records)} records")
         print(f"Record 1 table: {records[0].destination()}")
         print(f"Record 1 key: {records[0].key()}")
@@ -41,9 +41,6 @@ class TestChangeHandler(BasePythonChangeHandler):
         print("--------------------------------------")
         # @NOTE ..... your code goes here .....
         # @NOTE ..... process the data, for-example read it into pandas and save to destination etc. .....
-        for r in records:
-            committer.markProcessed(r)
-        committer.markBatchFinished()
 
 
 if __name__ == '__main__':
