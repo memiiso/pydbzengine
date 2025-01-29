@@ -3,6 +3,7 @@ pydbzengine.iml
 dbzjava
 build
 tests/logs
+pydbzengine/examples/logs
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
