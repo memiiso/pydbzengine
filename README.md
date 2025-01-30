@@ -20,7 +20,7 @@ pip install https://github.com/memiiso/pydbzengine/archive/master.zip --upgrade 
 
 ## How to Use
 
-A python Example:
+First install the packages, `pip install pydbzengine[dev]`
 
 ```python
 from typing import List
@@ -28,67 +28,51 @@ from pydbzengine import ChangeEvent, BasePythonChangeHandler
 from pydbzengine import Properties, DebeziumJsonEngine
 
 
-class TestChangeHandler(BasePythonChangeHandler):
+class PrintChangeHandler(BasePythonChangeHandler):
     """
-    An example implementation of a handler class, where the data received from java is processed.
+    A custom change event handler class.
+
+    This class processes batches of Debezium change events received from the engine.
+    The `handleJsonBatch` method is where you implement your logic for consuming
+    and processing these events.  Currently, it prints basic information about
+    each event to the console.
     """
 
     def handleJsonBatch(self, records: List[ChangeEvent]):
+        """
+        Handles a batch of Debezium change events.
+
+        This method is called by the Debezium engine with a list of ChangeEvent objects.
+        Change this method to implement your desired processing logic.  For example,
+        you might parse the event data, transform it, and load it into a database or
+        other destination.
+
+        Args:
+            records: A list of ChangeEvent objects representing the changes captured by Debezium.
+        """
         print(f"Received {len(records)} records")
-        print(f"Record 1 table: {records[0].destination()}")
-        print(f"Record 1 key: {records[0].key()}")
-        print(f"Record 1 value: {records[0].value()}")
+        for record in records:
+            print(f"destination: {record.destination()}")
+            print(f"key: {record.key()}")
+            print(f"value: {record.value()}")
         print("--------------------------------------")
-        # @NOTE ..... your code goes here .....
-        # @NOTE ..... process the data, for-example read it into pandas and save to destination etc. .....
 
 
 if __name__ == '__main__':
     props = Properties()
     props.setProperty("name", "engine")
     props.setProperty("snapshot.mode", "initial_only")
-    # ..... add further Debezium config properties .....
+    # Add further Debezium connector configuration properties here.  For example:
+    # props.setProperty("connector.class", "io.debezium.connector.mysql.MySqlConnector")
+    # props.setProperty("database.hostname", "your_database_host")
+    # props.setProperty("database.port", "3306")
 
-    # pass the config and then handler class we created above to the DebeziumJsonEngine
-    engine = DebeziumJsonEngine(properties=props, handler=TestChangeHandler())
-    # start consuming the event
+    # Create a DebeziumJsonEngine instance, passing the configuration properties and the custom change event handler.
+    engine = DebeziumJsonEngine(properties=props, handler=PrintChangeHandler())
+
+    # Start the Debezium engine to begin consuming and processing change events.
     engine.run()
-```
 
-Above code outputs logs like below
-
-```asciidoc
-2025-01-28 17:59:11,375 [INFO] [main] org.apache.kafka.connect.json.JsonConverterConfig (AbstractConfig.java:371) - JsonConverterConfig values:
-converter.type = key
-decimal.format = BASE64
-replace.null.with.default = true
-schemas.cache.size = 1000
-schemas.enable = false
-
-2025-01-28 17:59:11,378 [INFO] [main] org.apache.kafka.connect.json.JsonConverterConfig (AbstractConfig.java:371) - JsonConverterConfig values:
-converter.type = value
-decimal.format = BASE64
-replace.null.with.default = true
-schemas.cache.size = 1000
-schemas.enable = false
-......further debezium logs.........
-
-2025-01-28 17:59:11,909 [INFO] [pool-4-thread-1] io.debezium.relational.RelationalSnapshotChangeEventSource (RelationalSnapshotChangeEventSource.java:660) - Finished exporting 9 records for table 'inventory.products' (4 of 5 tables); total duration '00:00:00.003' 
-2025-01-28 17:59:11,909 [INFO] [pool-4-thread-1] io.debezium.relational.RelationalSnapshotChangeEventSource (RelationalSnapshotChangeEventSource.java:614) - Exporting data from table 'inventory.products_on_hand' (5 of 5 tables)
-
-Received 2 records
-Record 1 table: testc.inventory.orders
-Record 1 key: {"id":10004}
-Record 1 value: {"id":10004,"order_date":16852,"purchaser":1003,"quantity":1,"product_id":107,"__deleted":"false","__op":"r","__table":"orders","__source_ts_ms":1738083551906,"__ts_ms":1738083551905}
-
---------------------------------------
-Received 2 records
-Record 1 table: testc.inventory.products
-Record 1 key: {"id":102}
-Record 1 value: {"id":102,"name":"car battery","description":"12V car battery","weight":8.1,"__deleted":"false","__op":"r","__table":"products","__source_ts_ms":1738083551906,"__ts_ms":1738083551909}
---------------------------------------
-
-......further debezium logs.........
 ```
 
 ### Contributors
