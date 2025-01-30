@@ -18,10 +18,10 @@ class TestChangeHandler(BasePythonChangeHandler):
     def handleJsonBatch(self, records: List[ChangeEvent]):
         logging.getLogger(self.LOGGER_NAME).info(f"Received {len(records)} records")
         print(f"Received {len(records)} records")
-        for record in records:
-            print(f"Event table: {record.destination()}")
-            print(f"Event key: {record.key()}")
-            print(f"Event value: {record.value()}")
+        # for record in records:
+        #     print(f"Event table: {record.destination()}")
+        #     print(f"Event key: {record.key()}")
+        #     print(f"Event value: {record.value()}")
         print("--------------------------------------")
 
 
