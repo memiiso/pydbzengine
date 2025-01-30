@@ -22,7 +22,7 @@ class TestChangeHandler(BasePythonChangeHandler):
         #     print(f"Event table: {record.destination()}")
         #     print(f"Event key: {record.key()}")
         #     print(f"Event value: {record.value()}")
-        print("--------------------------------------")
+        # print("--------------------------------------")
 
 
 class TestBasePythonChangeHandler(BasePostgresqlTest):
