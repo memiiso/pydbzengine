@@ -27,8 +27,6 @@ class BasePostgresqlTest(unittest.TestCase):
         props.setProperty("poll.interval.ms", "10000")
         props.setProperty("converter.schemas.enable", "false")
         props.setProperty("offset.flush.interval.ms", "1000")
-        props.setProperty("database.server.name", "testc")
-        props.setProperty("database.server.id", "1234")
         props.setProperty("topic.prefix", "testc")
         props.setProperty("schema.whitelist", "inventory")
         props.setProperty("database.whitelist", "inventory")

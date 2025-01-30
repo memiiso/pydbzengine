@@ -20,6 +20,8 @@ class TestDebeziumJsonEngine(BasePostgresqlTest):
     def test_dlt_consuming(self):
         # get debezium engine configuration Properties
         props = self.debezium_engine_props()
+        props.setProperty("database.server.name", "testdlt")
+        props.setProperty("database.server.id", "2345")
         # create dlt pipeline to consume events to duckdb
         dlt_pipeline = dlt.pipeline(
             pipeline_name="dbz_cdc_events",

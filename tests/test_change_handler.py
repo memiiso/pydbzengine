@@ -28,6 +28,8 @@ class TestChangeHandler(BasePythonChangeHandler):
 class TestBasePythonChangeHandler(BasePostgresqlTest):
     def test_consuming_with_handler(self):
         props = self.debezium_engine_props()
+        props.setProperty("database.server.name", "testc")
+        props.setProperty("database.server.id", "1234")
         props.setProperty("max.batch.size", "5")
 
         with self.assertLogs(TestChangeHandler.LOGGER_NAME, level='INFO') as cm:
