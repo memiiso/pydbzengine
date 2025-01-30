@@ -28,7 +28,7 @@ class TestChangeHandler(BasePythonChangeHandler):
 class TestBasePythonChangeHandler(BasePostgresqlTest):
     def test_consuming_with_handler(self):
         props = self.debezium_engine_props()
-        props.setProperty("max.batch.size", f"5")
+        props.setProperty("max.batch.size", "5")
 
         with self.assertLogs(TestChangeHandler.LOGGER_NAME, level='INFO') as cm:
             # run async then interrupt after timeout!
