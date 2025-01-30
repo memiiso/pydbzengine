@@ -90,33 +90,64 @@ def debezium_engine_props(sourcedb: DbPostgresql):
     return props
 
 def main():
-    # start PG container which is used as replication source
+    """
+    Demonstrates capturing change data from PostgreSQL using Debezium and loading
+    it into DuckDB using dlt.
+
+    This example starts a PostgreSQL container, configures Debezium to capture changes,
+    processes the change events with a custom handler using dlt, and finally queries
+    the DuckDB database to display the loaded data.
+    """
+
+    # Start the PostgreSQL container that will serve as the replication source.
     sourcedb = DbPostgresql()
     sourcedb.start()
-    # get debezium engine configuration Properties
+
+    # Get Debezium engine configuration properties, including connection details
+    # for the PostgreSQL database. This function debezium_engine_props returns all the properties
     props = debezium_engine_props(sourcedb=sourcedb)
-    # create dlt pipeline to consume events to duckdb
+
+    # Create a dlt pipeline to load the change events into DuckDB.
     dlt_pipeline = dlt.pipeline(
         pipeline_name="dbz_cdc_events_example",
         destination="duckdb",
         dataset_name="dbz_data"
     )
-    # create handler class, which will process generated debezium events wih dlt
-    handler = DltChangeHandler(dlt_pipeline=dlt_pipeline)
-    # give the config and the handler class to the DebeziumJsonEngine
-    engine = DebeziumJsonEngine(properties=props, handler=handler)
-    # run the engine async then interrupt after timeout seconds, to test the result!
-    Utils.run_engine_async(engine=engine, timeout_sec=60)
-    # engine.run()
 
-    # ================ PRINT THE CONSUMED DATA ===========================
+    # Instantiate change event handler (DltChangeHandler) that uses the dlt pipeline
+    # to process and load the Debezium events.  This handler has
+    # the logic for transforming and loading the events.
+    handler = DltChangeHandler(dlt_pipeline=dlt_pipeline)
+
+    # Create a DebeziumJsonEngine instance, providing the configuration properties
+    # and the custom event handler.
+    engine = DebeziumJsonEngine(properties=props, handler=handler)
+
+    # Run the Debezium engine asynchronously with a timeout.  This allows the example
+    # to run for a limited time and then terminate automatically.
+    Utils.run_engine_async(engine=engine, timeout_sec=60)
+    # engine.run()  # This would be used for synchronous execution (without timeout)
+
+    # ================ PRINT THE CONSUMED DATA FROM DUCKDB ===========================
+    # Connect to the DuckDB database.
     con = duckdb.connect(DUCKDB_FILE.as_posix())
+
+    # Retrieve a list of all tables in the DuckDB database.
     result = con.sql("SHOW ALL TABLES").fetchall()
+
+    # Iterate through the tables and display the data from tables within the 'dbz_data' schema.
     for r in result:
-        database, schema, table = r[:3]
-        if schema == "dbz_data":
-            con.sql(f"select * from {database}.{schema}.{table}").show()
+        database, schema, table = r[:3]  # Extract database, schema, and table names.
+        if schema == "dbz_data":  # Only show data from the schema where Debezium loaded the data.
+            print(f"Data in table {table}:")
+            con.sql(f"select * from {database}.{schema}.{table}").show() # Display table data
+
 
 if __name__ == "__main__":
-    """ First run `pip install pydbzengine[dev]` """
+    """
+    Main entry point for the script.
+
+    Before running, ensure you have installed the necessary dependencies:
+    `pip install pydbzengine[dev]`
+    """
     main()

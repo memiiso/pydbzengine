@@ -74,6 +74,11 @@ if __name__ == '__main__':
     engine.run()
 
 ```
+#### How to consume events with dlt 
+For dlt example please see [dlt_consuming.py](pydbzengine/examples/dlt_consuming.py)
+
+https://github.com/memiiso/pydbzengine/blob/9a26d4c2ee2c5c48ee500d572288f2c27ad17a6c/pydbzengine/examples/dlt_consuming.py#L92-L160
+
 
 ### Contributors
 
