@@ -118,4 +118,5 @@ def main():
             con.sql(f"select * from {database}.{schema}.{table}").show()
 
 if __name__ == "__main__":
+    """ First run `pip install pydbzengine[dev]` """
     main()
