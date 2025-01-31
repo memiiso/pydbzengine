@@ -14,7 +14,7 @@ class BasePostgresqlTest(unittest.TestCase):
     def debezium_engine_props(self):
         props = Properties()
         props.setProperty("name", "engine")
-        props.setProperty("snapshot.mode", "initial_only")
+        props.setProperty("snapshot.mode", "always")
         props.setProperty("database.hostname", self.SOURCEDB.CONTAINER.get_container_host_ip())
         props.setProperty("database.port",
                           self.SOURCEDB.CONTAINER.get_exposed_port(self.SOURCEDB.POSTGRES_PORT_DEFAULT))

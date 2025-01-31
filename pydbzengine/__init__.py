@@ -163,6 +163,9 @@ class PythonChangeConsumer(PythonJavaClass):
         print("Interrupt called in python consumer")
         JavaLangThread.currentThread().interrupt()  # Interrupt the current thread (Debezium engine thread).
 
+    def __exit__(self, exc_type, exc_value, traceback):
+        print("Python Exit method called! calling interrupt to stop the engine")
+        self.interrupt()
 
 class DebeziumJsonEngine:
     """

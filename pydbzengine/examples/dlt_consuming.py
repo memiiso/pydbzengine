@@ -140,7 +140,7 @@ def main():
         database, schema, table = r[:3]  # Extract database, schema, and table names.
         if schema == "dbz_data":  # Only show data from the schema where Debezium loaded the data.
             print(f"Data in table {table}:")
-            con.sql(f"select * from {database}.{schema}.{table}").show() # Display table data
+            con.sql(f"select * from {database}.{schema}.{table} limit 5").show() # Display table data
 
 
 if __name__ == "__main__":
