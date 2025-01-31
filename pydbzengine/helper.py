@@ -1,7 +1,5 @@
 import signal
 import threading
-import logging
-logger = logging.getLogger(__name__)
 
 def timeout_handler(signum, frame):
     """
@@ -47,7 +45,7 @@ class Utils:
 
         except TimeoutError:
             # Handle the timeout exception.
-            logger.error("Engine run timed out!") # use logger here for better logging
+            print("Engine run timed out!") # use logger here for better logging
             return  # Or potentially handle the timeout differently (e.g., attempt to stop the engine).
 
         finally:
@@ -57,4 +55,4 @@ class Utils:
 
         # If the engine.run() finishes within the timeout, this point will be reached.
         # No explicit return is needed as the function doesn't return anything.
-        logger.info("Engine run completed successfully.") # Add a log message to signal success
+        print("Engine run completed successfully.") # Add a log message to signal success
