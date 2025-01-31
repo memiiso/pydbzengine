@@ -4,6 +4,8 @@ dbzjava
 build
 tests/logs
 pydbzengine/examples/logs
+**.duckdb
+**offsets.dat
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
