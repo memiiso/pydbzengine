@@ -1,4 +1,10 @@
-from airflow.models import BaseOperator
+import sys
+try:
+    from airflow.models import BaseOperator
+except ImportError:
+    print("Error: airflow is required for this functionality.", file=sys.stderr)  # Print to stderr
+    print("Please install it using 'pip install apache-airflow' (or the appropriate command for your Airflow installation).", file=sys.stderr)
+    raise
 
 from pydbzengine import DebeziumJsonEngine
 
