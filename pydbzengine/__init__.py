@@ -4,9 +4,12 @@ from pathlib import Path
 from typing import List
 
 ################# INIT PYJNIUS ####################
+# Define paths to Debezium Java libraries and configuration directory.
 DEBEZIUM_JAVA_LIBS_DIR = Path(__file__).parent.joinpath("debezium/libs/*").as_posix()
 DEBEZIUM_CONF_DIR = Path(__file__).parent.joinpath("config").as_posix()
 CLASS_PATHS = [DEBEZIUM_JAVA_LIBS_DIR, DEBEZIUM_CONF_DIR]
+
+# Add current working directory's config folder to classpath if exists
 CONFIG_DIR = Path().cwd().joinpath('config')
 if CONFIG_DIR.is_dir() and CONFIG_DIR.exists():
     print(f"Adding classpath: {CONFIG_DIR.as_posix()}")
@@ -14,19 +17,23 @@ if CONFIG_DIR.is_dir() and CONFIG_DIR.exists():
 
 import jnius_config
 
-# jnius_config.add_options('-Dlog4j.debug')
+# Add the necessary classpaths for JNI interaction with Java.
 jnius_config.add_classpath(*CLASS_PATHS)
+
 from jnius import autoclass
 from jnius import PythonJavaClass, java_method, JavaMethod
 
 ################# JAVA REFLECTION CLASSES #################
+# Import Java classes using jnius's autoclass for reflection.
 Properties = autoclass('java.util.Properties')
 DebeziumEngine = autoclass('io.debezium.engine.DebeziumEngine')
-# following class is used by DebeziumEngine(above class)
 DebeziumEngineBuilder = autoclass('io.debezium.engine.DebeziumEngine$Builder')
-# NOTE: Override the notifying method somehow jnius was calling wrong java method. (first one)
+
+# Override the notifying method of DebeziumEngineBuilder to use the correct JavaMethod signature.
+# This is a workaround for a potential jnius issue where the wrong Java method is called.
 DebeziumEngineBuilder.notifying = JavaMethod(
     '(Lio/debezium/engine/DebeziumEngine$ChangeConsumer;)Lio/debezium/engine/DebeziumEngine$Builder;')
+
 StopEngineException = autoclass('io.debezium.engine.StopEngineException')
 JavaLangSystem = autoclass('java.lang.System')
 JavaLangThread = autoclass('java.lang.Thread')
@@ -34,55 +41,67 @@ JavaLangThread = autoclass('java.lang.Thread')
 
 class RecordCommitter(ABC):
     """
-    USed for type hinting, for a coding convenience!
-    imitates: io.debezium.engine.DebeziumEngine$RecordCommitter class
+    Abstract base class for type hinting the RecordCommitter.
+    Mimics the io.debezium.engine.DebeziumEngine$RecordCommitter interface for Python.
     """
 
     def markProcessed(self, record):
+        """Marks a single record as processed."""
         pass
 
     def markBatchFinished(self):
+        """Marks the entire batch as finished."""
         pass
 
 
 class ChangeEvent(ABC):
     """
-    USed for type hinting, for a coding convenience!
-    imitates: org.apache.kafka.connect.connector.ConnectRecord class
+    Abstract base class for type hinting the ChangeEvent.
+    Mimics the org.apache.kafka.connect.connector.ConnectRecord interface for Python.
     """
 
     def key(self) -> str:
+        """Returns the record key."""
         pass
 
     def value(self) -> str:
+        """Returns the record value (payload)."""
         pass
 
-    # def headers(self) -> str:
-    #     pass
     def destination(self) -> str:
+        """Returns the destination topic/table."""
         pass
 
     def partition(self) -> int:
+        """Returns the partition the record belongs to."""
         pass
 
 
 class EngineFormat:
+    """
+    Class holding constants for Debezium engine formats.
+    """
     JSON = autoclass('io.debezium.engine.format.Json')
 
 
 class BasePythonChangeHandler(ABC):
     """
-    Abstract class which end user needs to implement and pass it to PythonChangeConsumer!
-    this is pure python class which receives variables which are type of java reflection classes.
+    Abstract base class for user-defined change event handlers.
+    Users must implement the `handleJsonBatch` method to process Debezium events.
     """
 
     def handleJsonBatch(self, records: List[ChangeEvent]):
         """
-        receives events from java! both records and committer arguments are java reflection classes.
-        here we can read generated json events, and consume them
+        Handles a batch of change events.
 
-        :param records: list of records. reflection of: org.apache.kafka.connect.connector.ConnectRecord
-        :return:
+        This method receives a list of ChangeEvent objects (which are representations of
+        Java ConnectRecords) and should process them.
+
+        Args:
+            records: A list of ChangeEvent objects representing the changes.
+
+        Raises:
+            NotImplementedError: If the method is not implemented.
         """
         raise NotImplementedError(
             "Not implemented, Please implement BasePythonChangeHandler and use it to consume events!")
@@ -90,59 +109,74 @@ class BasePythonChangeHandler(ABC):
 
 class PythonChangeConsumer(PythonJavaClass):
     """
-    IMPORTANT: Java class implementation in Python. Proxy class
-    implements ChangeConsumer interface of the debezium
-
-    holds one additional pyhon argument self.handler, which is responsible to consume the events within python
+    Python implementation of the Debezium ChangeConsumer interface.
+    This class acts as a bridge between Java Debezium Engine and the Python handler.
     """
     __javainterfaces__ = ['io/debezium/engine/DebeziumEngine$ChangeConsumer']
 
     def __init__(self):
-        self.handler: BasePythonChangeHandler
+        self.handler: BasePythonChangeHandler = None  # The Python handler instance.
 
     @java_method('(Ljava/util/List;Lio/debezium/engine/DebeziumEngine$RecordCommitter;)V')
     def handleBatch(self, records: List[ChangeEvent], committer: RecordCommitter):
         """
-        :param records: list of records. reflection of: org.apache.kafka.connect.connector.ConnectRecord
-        :param committer: reflection of: io.debezium.engine.DebeziumEngine$RecordCommitter
-        :return:
+        Handles a batch of change events received from the Debezium engine.
+
+        This method is called by the Java Debezium engine. It calls the user-defined
+        Python handler to process the events and then acknowledges the batch.
+
+        Args:
+            records: A list of ChangeEvent objects representing the changes.
+            committer: The RecordCommitter used to acknowledge processed records.
         """
         try:
             self.handler.handleJsonBatch(records=records)
             for e in records:
-                committer.markProcessed(e)
-            committer.markBatchFinished()
+                committer.markProcessed(e)  # Mark each record as processed.
+            committer.markBatchFinished()  # Mark the batch as finished.
         except Exception as e:
             print("ERROR: failed to consume events in python")
             print(str(e))
             print(traceback.format_exc())
-            JavaLangThread.currentThread().interrupt()
+            JavaLangThread.currentThread().interrupt()  # Interrupt the Debezium engine on error.
 
     @java_method('()Z')
     def supportsTombstoneEvents(self):
+        """
+        Indicates whether the consumer supports tombstone events.
+        """
         return True
 
     def set_change_handler(self, handler: BasePythonChangeHandler):
         """
-        # NOTE: Additional method, not part of the java interface definition.
-        Sets handler class. all the java arguments are passed to this class for processing within python system.
+        Sets the Python change event handler.
+
+        Args:
+            handler: The Python change event handler instance.
         """
         self.handler = handler
 
     def interrupt(self):
         """
-        # NOTE: Additional method, not part of the java interface definition.
-        Used to stop debezium run. used to interrupt debezium process when any error happens processing data with python
+        Interrupts the Debezium engine.
         """
         print("Interrupt called in python consumer")
-        JavaLangThread.currentThread().interrupt()
+        JavaLangThread.currentThread().interrupt()  # Interrupt the current thread (Debezium engine thread).
 
 
 class DebeziumJsonEngine:
     """
-    Main pyton class which puts everything together. the Main application.
+    Main class to manage the Debezium embedded engine.
     """
+
     def __init__(self, properties: Properties, handler: BasePythonChangeHandler):
+        """
+        Initializes the DebeziumJsonEngine.
+
+        Args:
+            properties: Java Properties object containing the Debezium configuration.
+            handler: The Python change event handler instance.
+        """
         self.properties: Properties = properties
 
         if self.properties is None:
@@ -150,25 +184,24 @@ class DebeziumJsonEngine:
         if handler is None:
             raise ValueError("Please provide handler class, see example class `pydbzengine.BasePythonChangeHandler`!")
 
-        # Python class which implements java interface, proxy class
-        self.consumer = PythonChangeConsumer()
-        # give it additional pyhon class to hand over the data/arguments received from java
-        self._handler = handler
-        self.consumer.set_change_handler(self._handler)
-        # instantiation of the java application, Embedded engine.
-        self.engine: DebeziumEngine = (DebeziumEngine.create(EngineFormat.JSON)
-                                       .using(self.properties)
-                                       .notifying(self.consumer)
-                                       .build())
+        self.consumer = PythonChangeConsumer()  # Create the Python change consumer.
+        self._handler = handler  # Store the handler.
+        self.consumer.set_change_handler(self._handler)  # Set the handler for the consumer.
+
+        # Create and configure the Debezium engine.
+        self.engine: DebeziumEngine = (DebeziumEngine.create(EngineFormat.JSON)  # Use JSON format.
+                                       .using(self.properties)  # Set the configuration properties.
+                                       .notifying(self.consumer)  # Set the change consumer.
+                                       .build())  # Build the engine.
 
     def run(self):
         """
-        Start the execution of debezium Embedded engine
+        Starts the Debezium embedded engine.
         """
         self.engine.run()
 
     def interrupt(self):
         """
-        calls java interrupt to stop the Embedded engine
+        Interrupts the Debezium embedded engine.
         """
         self.consumer.interrupt()
