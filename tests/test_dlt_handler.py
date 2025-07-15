@@ -5,7 +5,7 @@ import duckdb
 
 from base_postgresql_test import BasePostgresqlTest
 from pydbzengine import DebeziumJsonEngine
-from pydbzengine.debeziumdlt import DltChangeHandler
+from pydbzengine.handlers.dlt import DltChangeHandler
 from pydbzengine.helper import Utils
 
 
