@@ -2,7 +2,7 @@ import os
 import unittest
 from pathlib import Path
 
-from DbPostgresql import DbPostgresql
+from db_postgresql import DbPostgresql
 from pydbzengine import Properties
 
 

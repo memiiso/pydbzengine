@@ -8,7 +8,7 @@ from testcontainers.core.waiting_utils import wait_for_logs
 from testcontainers.postgres import PostgresContainer
 
 from pydbzengine import DebeziumJsonEngine, Properties
-from pydbzengine.debeziumdlt import DltChangeHandler
+from pydbzengine.handlers.dlt import DltChangeHandler
 from pydbzengine.helper import Utils
 
 # set global variables

@@ -17,12 +17,13 @@ class TestChangeHandler(BasePythonChangeHandler):
 
     def handleJsonBatch(self, records: List[ChangeEvent]):
         logging.getLogger(self.LOGGER_NAME).info(f"Received {len(records)} records")
-        print(f"Received {len(records)} records")
-        # for record in records:
-        #     print(f"Event table: {record.destination()}")
-        #     print(f"Event key: {record.key()}")
-        #     print(f"Event value: {record.value()}")
-        # print("--------------------------------------")
+        print(f"num {len(records)} total")
+
+        for record in records:
+            print(f"Event table: {type(record.destination())} {record.destination()}")
+            print(f"Event key: {type(record.key())} {record.key()}")
+            print(f"Event value: {type(record.value())} {record.value()}")
+        print("--------------------------------------")
 
 
 class TestBasePythonChangeHandler(BasePostgresqlTest):
@@ -35,6 +36,7 @@ class TestBasePythonChangeHandler(BasePostgresqlTest):
         with self.assertLogs(TestChangeHandler.LOGGER_NAME, level='INFO') as cm:
             # run async then interrupt after timeout!
             engine = DebeziumJsonEngine(properties=props, handler=TestChangeHandler())
-            Utils.run_engine_async(engine=engine)
+            Utils.run_engine_async(engine=engine, timeout_sec=22)
 
+        print(cm.output)
         self.assertRegex(text=str(cm.output), expected_regex='.*Received.*records.*')
