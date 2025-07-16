@@ -16,11 +16,6 @@ CURRENT_DIR = Path(__file__).parent
 DUCKDB_FILE = CURRENT_DIR.joinpath("dbz_cdc_events_example.duckdb")
 OFFSET_FILE = CURRENT_DIR.joinpath('postgresql-offsets.dat')
 
-# cleanup
-if OFFSET_FILE.exists():
-    os.remove(OFFSET_FILE)
-if DUCKDB_FILE.exists():
-    os.remove(DUCKDB_FILE)
 
 def wait_for_postgresql_to_start(self) -> None:
     wait_for_logs(self, ".*database system is ready to accept connections.*")
@@ -44,14 +39,22 @@ class DbPostgresql:
                                     )
     PostgresContainer._connect = wait_for_postgresql_to_start
 
+    def clean_files(self):
+        if OFFSET_FILE.exists():
+            os.remove(OFFSET_FILE)
+        if DUCKDB_FILE.exists():
+            os.remove(DUCKDB_FILE)
+
     def start(self):
         testcontainers_config.ryuk_disabled = True
+        self.clean_files()
         print("Starting Postgresql Db...")
         self.CONTAINER.start()
 
     def stop(self):
         print("Stopping Postgresql Db...")
         self.CONTAINER.stop()
+        self.clean_files()
 
     def __exit__(self, exc_type, exc_value, traceback):
         self.stop()
@@ -88,6 +91,7 @@ def debezium_engine_props(sourcedb: DbPostgresql):
     props.setProperty("transforms.unwrap.delete.handling.mode", "rewrite")
     # props.setProperty("debezium.transforms.unwrap.drop.tombstones", "true")
     return props
+
 
 def main():
     """
@@ -140,7 +144,7 @@ def main():
         database, schema, table = r[:3]  # Extract database, schema, and table names.
         if schema == "dbz_data":  # Only show data from the schema where Debezium loaded the data.
             print(f"Data in table {table}:")
-            con.sql(f"select * from {database}.{schema}.{table} limit 5").show() # Display table data
+            con.sql(f"select * from {database}.{schema}.{table} limit 5").show()  # Display table data
 
 
 if __name__ == "__main__":

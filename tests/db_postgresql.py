@@ -1,10 +1,6 @@
-from pathlib import Path
-
 from testcontainers.core.config import testcontainers_config
 from testcontainers.core.waiting_utils import wait_for_logs
 from testcontainers.postgres import PostgresContainer
-
-from pydbzengine import Properties
 
 
 def wait_for_pg_start(self) -> None:
@@ -30,45 +26,15 @@ class DbPostgresql:
     PostgresContainer._connect = wait_for_pg_start
 
     def start(self):
-        print("Starting Postgresql Db...")
         testcontainers_config.ryuk_disabled = True
         self.CONTAINER.start()
+        print(f"Postgresql Started: {self.CONTAINER.get_connection_url()}")
 
     def stop(self):
-        print("Stopping Postgresql Db...")
-        self.CONTAINER.stop()
+        try:
+            self.CONTAINER.stop()
+        except:
+            pass
 
     def __exit__(self, exc_type, exc_value, traceback):
         self.stop()
-
-    def get_debezium_engine_properties(self, unwrap_messages=True):
-        current_dir = Path(__file__).parent
-        offset_file_path = current_dir.joinpath('postgresql-offsets.dat')
-
-        props = Properties()
-        props.setProperty("name", "engine")
-        props.setProperty("snapshot.mode", "always")
-        props.setProperty("database.hostname", self.CONTAINER.get_container_host_ip())
-        props.setProperty("database.port",
-                          self.CONTAINER.get_exposed_port(self.POSTGRES_PORT_DEFAULT))
-        props.setProperty("database.user", self.POSTGRES_USER)
-        props.setProperty("database.password", self.POSTGRES_PASSWORD)
-        props.setProperty("database.dbname", self.POSTGRES_DBNAME)
-        props.setProperty("connector.class", "io.debezium.connector.postgresql.PostgresConnector")
-        props.setProperty("offset.storage", "org.apache.kafka.connect.storage.FileOffsetBackingStore")
-        props.setProperty("offset.storage.file.filename", offset_file_path.as_posix())
-        props.setProperty("poll.interval.ms", "10000")
-        props.setProperty("converter.schemas.enable", "false")
-        props.setProperty("offset.flush.interval.ms", "1000")
-        props.setProperty("topic.prefix", "testc")
-        props.setProperty("schema.whitelist", "inventory")
-        props.setProperty("database.whitelist", "inventory")
-        props.setProperty("table.whitelist", "inventory.products")
-        props.setProperty("replica.identity.autoset.values", "inventory.*:FULL")
-
-        if unwrap_messages:
-            props.setProperty("transforms", "unwrap")
-            props.setProperty("transforms.unwrap.type", "io.debezium.transforms.ExtractNewRecordState")
-            props.setProperty("transforms.unwrap.add.fields", "op,table,source.ts_ms,sourcedb,ts_ms")
-            props.setProperty("transforms.unwrap.delete.handling.mode", "rewrite")
-        return props
