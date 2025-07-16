@@ -1,23 +1,40 @@
 [![License](http://img.shields.io/:license-apache%202.0-brightgreen.svg)](http://www.apache.org/licenses/LICENSE-2.0.html)
-![contributions welcome](https://img.shields.io/badge/contributions-welcome-brightgreen.svg?style=flat)
+[![PyPI version](https://badge.fury.io/py/pydbzengine.svg)](https://badge.fury.io/py/pydbzengine)
+[![contributions welcome](https://img.shields.io/badge/contributions-welcome-brightgreen.svg?style=flat)](https://github.com/memiiso/pydbzengine/graphs/contributors)
 [![Create Pypi Release](https://github.com/memiiso/pydbzengine/actions/workflows/release.yml/badge.svg)](https://github.com/memiiso/pydbzengine/actions/workflows/release.yml)
+
 # pydbzengine
 
-A Python module to use [Debezium Engine](https://debezium.io/) in python. Consume Database CDC events using python.
+A Pythonic interface for the [Debezium Engine](https://debezium.io/documentation/reference/stable/development/engine.html), allowing you to consume database Change Data Capture (CDC) events directly in your Python applications.
 
-Java integration is using [Pyjnius](https://pyjnius.readthedocs.io/en/latest/), It is a Python library for accessing
-Java classes
+## Features
+
+*   **Pure Python Interface**: Interact with the powerful Debezium Engine using simple Python classes and methods.
+*   **Pluggable Event Handlers**: Easily create custom handlers to process CDC events according to your specific needs.
+*   **Built-in Iceberg Handler**: Stream change events directly into Apache Iceberg tables with zero boilerplate.
+*   **Seamless Integration**: Designed to work with popular Python data tools like [dlt (data load tool)](https://dlthub.com/).
+*   **All Debezium Connectors**: Supports all standard Debezium connectors (PostgreSQL, MySQL, SQL Server, Oracle, etc.).
+
+## How it Works
+
+This library acts as a bridge between the Python world and the Java-based Debezium Engine. It uses [Pyjnius](https://pyjnius.readthedocs.io/en/latest/) to manage the JVM and interact with Debezium's Java classes, exposing a clean, Pythonic API so you can focus on your data logic without writing Java code.
 
 ## Installation
 
-Python+Java integration requires a Java Development Kit (JDK). Ensure a JDK is installed on environment.
+### Prerequisites
+You must have a **Java Development Kit (JDK) version 11 or newer** installed and available in your system's `PATH`.
 
-install:
+### From PyPI
 
 ```shell
+# For core functionality
 pip install pydbzengine
-# install from github:
-pip install https://github.com/memiiso/pydbzengine/archive/master.zip --upgrade --user
+
+# To include dependencies for the Apache Iceberg handler
+pip install 'pydbzengine[iceberg]'
+
+# To include dependencies for the dlt handler example
+pip install 'pydbzengine[dlt]'
 ```
 
 ## How to Use
@@ -119,4 +136,3 @@ https://github.com/memiiso/pydbzengine/blob/c4a88228aa66a2dc41b3dcc192615b135732
 <a href="https://github.com/memiiso/pydbzengine/graphs/contributors">
   <img src="https://contributors-img.web.app/image?repo=memiiso/pydbzengine" />
 </a>
-
