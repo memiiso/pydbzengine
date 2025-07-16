@@ -28,71 +28,20 @@ class IcebergChangeHandler(BasePythonChangeHandler):
     This class receives batches of Debezium ChangeEvent objects and applies the changes
     to the corresponding Iceberg tables.
     """
-    DEBEZIUM_EVENT_SCHEMA = Schema(
-        NestedField(field_id=1, name="op", field_type=StringType(), required=True,
-                    doc="The operation type: c, u, d, r"),
-        NestedField(field_id=2, name="ts_ms", field_type=LongType(), required=False,
-                    doc="Timestamp of the event in milliseconds"),
-        NestedField(field_id=3, name="ts_us", field_type=LongType(), required=False,
-                    doc="Timestamp of the event in microseconds"),
-        NestedField(field_id=4, name="ts_ns", field_type=LongType(), required=False,
-                    doc="Timestamp of the event in nanoseconds"),
-        NestedField(
-            field_id=5,
-            name="source",
-            field_type=StringType(),
-            required=True,
-            doc="Debezium source metadata",
-        ),
-        NestedField(
-            field_id=6,
-            name="before",
-            field_type=StringType(),
-            required=False,
-            doc="JSON string of the row state before the change",
-        ),
-        NestedField(
-            field_id=7,
-            name="after",
-            field_type=StringType(),
-            required=False,
-            doc="JSON string of the row state after the change",
-        ),
-        NestedField(
-            field_id=8,
-            name="_dbz_event_key",
-            field_type=StringType(),
-            required=False,
-            doc="JSON string of the Debezium event key",
-        ),
-        NestedField(
-            field_id=9,
-            name="_dbz_event_key_hash",
-            field_type=UUIDType(),
-            required=False,
-            doc="UUID hash of the Debezium event key",
-        ),
-        NestedField(
-            field_id=10,
-            name="_consumed_at",
-            field_type=TimestampType(),
-            required=False,
-            doc="Timestamp of when the event was consumed",
-        ),
-    )
 
     DEBEZIUM_EVENT_PARTITION_SPEC = PartitionSpec(
         PartitionField(source_id=10, field_id=1000, name="_consumed_at_day", transform=DayTransform())
     )
     LOGGER_NAME = "pydbzengine.iceberg.IcebergChangeHandler"
 
-    def __init__(self, catalog: "Catalog", destination_namespace: tuple):
+    def __init__(self, catalog: "Catalog", destination_namespace: tuple, supports_variant:bool=False):
         """
         Initializes the IcebergChangeHandler.
         """
         self.log = logging.getLogger(self.LOGGER_NAME)
         self.destination_namespace: tuple = destination_namespace
         self.catalog = catalog
+        self.supports_variant = supports_variant
 
     def handleJsonBatch(self, records: List[ChangeEvent]):
         """
@@ -133,7 +82,7 @@ class IcebergChangeHandler(BasePythonChangeHandler):
             arrow_data.append(avro_record)
 
         if arrow_data:
-            pa_table = pa.Table.from_pylist(mapping=arrow_data, schema=self.DEBEZIUM_EVENT_SCHEMA.as_arrow())
+            pa_table = pa.Table.from_pylist(mapping=arrow_data, schema=self.debezium_event_schema.as_arrow())
             table.append(pa_table)
             self.log.info(f"Appended {len(arrow_data)} records to table {'.'.join(table.name())}")
 
@@ -176,7 +125,7 @@ class IcebergChangeHandler(BasePythonChangeHandler):
         except NoSuchTableError:
             self.log.warning(f"Iceberg table {'.'.join(iceberg_table)} not found, creating it.")
             table = self.catalog.create_table(identifier=iceberg_table,
-                                              schema=self.DEBEZIUM_EVENT_SCHEMA,
+                                              schema=self.debezium_event_schema,
                                               partition_spec=self.DEBEZIUM_EVENT_PARTITION_SPEC)
             self.log.info(f"Created iceberg table {'.'.join(iceberg_table)} with daily partitioning on _consumed_at.")
             return table
@@ -184,3 +133,59 @@ class IcebergChangeHandler(BasePythonChangeHandler):
     def _resolve_table_identifier(self, destination: str) -> tuple:
         table_name = destination.replace('.', '_').replace(' ', '_').replace('-', '_')
         return self.destination_namespace + (table_name,)
+
+    @property
+    def debezium_event_schema(self) -> Schema:
+        # @TODO according to self supports_variant we can return different schemas!
+        return Schema(
+            NestedField(field_id=1, name="op", field_type=StringType(), required=True,
+                        doc="The operation type: c, u, d, r"),
+            NestedField(field_id=2, name="ts_ms", field_type=LongType(), required=False,
+                        doc="Timestamp of the event in milliseconds"),
+            NestedField(field_id=3, name="ts_us", field_type=LongType(), required=False,
+                        doc="Timestamp of the event in microseconds"),
+            NestedField(field_id=4, name="ts_ns", field_type=LongType(), required=False,
+                        doc="Timestamp of the event in nanoseconds"),
+            NestedField(
+                field_id=5,
+                name="source",
+                field_type=StringType(),
+                required=True,
+                doc="Debezium source metadata",
+            ),
+            NestedField(
+                field_id=6,
+                name="before",
+                field_type=StringType(),
+                required=False,
+                doc="JSON string of the row state before the change",
+            ),
+            NestedField(
+                field_id=7,
+                name="after",
+                field_type=StringType(),
+                required=False,
+                doc="JSON string of the row state after the change",
+            ),
+            NestedField(
+                field_id=8,
+                name="_dbz_event_key",
+                field_type=StringType(),
+                required=False,
+                doc="JSON string of the Debezium event key",
+            ),
+            NestedField(
+                field_id=9,
+                name="_dbz_event_key_hash",
+                field_type=UUIDType(),
+                required=False,
+                doc="UUID hash of the Debezium event key",
+            ),
+            NestedField(
+                field_id=10,
+                name="_consumed_at",
+                field_type=TimestampType(),
+                required=False,
+                doc="Timestamp of when the event was consumed",
+            ),
+        )
