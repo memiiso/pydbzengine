@@ -82,7 +82,7 @@ class IcebergChangeHandler(BasePythonChangeHandler):
             arrow_data.append(avro_record)
 
         if arrow_data:
-            pa_table = pa.Table.from_pylist(mapping=arrow_data, schema=self.debezium_event_schema.as_arrow())
+            pa_table = pa.Table.from_pylist(mapping=arrow_data, schema=self._target_schema.as_arrow())
             table.append(pa_table)
             self.log.info(f"Appended {len(arrow_data)} records to table {'.'.join(table.name())}")
 
@@ -125,7 +125,7 @@ class IcebergChangeHandler(BasePythonChangeHandler):
         except NoSuchTableError:
             self.log.warning(f"Iceberg table {'.'.join(iceberg_table)} not found, creating it.")
             table = self.catalog.create_table(identifier=iceberg_table,
-                                              schema=self.debezium_event_schema,
+                                              schema=self._target_schema,
                                               partition_spec=self.DEBEZIUM_EVENT_PARTITION_SPEC)
             self.log.info(f"Created iceberg table {'.'.join(iceberg_table)} with daily partitioning on _consumed_at.")
             return table
@@ -135,8 +135,8 @@ class IcebergChangeHandler(BasePythonChangeHandler):
         return self.destination_namespace + (table_name,)
 
     @property
-    def debezium_event_schema(self) -> Schema:
-        # @TODO according to self supports_variant we can return different schemas!
+    def _target_schema(self) -> Schema:
+        # @TODO according to self.supports_variant we can return different schemas!
         return Schema(
             NestedField(field_id=1, name="op", field_type=StringType(), required=True,
                         doc="The operation type: c, u, d, r"),
