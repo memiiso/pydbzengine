@@ -32,7 +32,7 @@ jobs:
           python3 --version
           pip install coverage pylint pytest setuptools
           python3 -m compileall -f pydbzengine
-          pip install .[dev]
+          pip install .[dev,dlt,iceberg]
           python3 -m coverage report -m ./pydbzengine/*.py
           python3 -m coverage run --source=./tests/ -m unittest discover -s tests/
 #          python3 -m pylint pydbzengine
