@@ -1,11 +1,13 @@
 import unittest
 
 from pyiceberg.catalog import load_catalog
+from pyiceberg.schema import Schema
+from pyiceberg.types import LongType, NestedField, StringType
 
 from base_postgresql_test import BasePostgresqlTest
 from catalog_rest import CatalogRestContainer
 from pydbzengine import DebeziumJsonEngine
-from pydbzengine.handlers.iceberg import IcebergChangeHandler, DEBEZIUM_EVENT_SCHEMA
+from pydbzengine.handlers.iceberg import IcebergChangeHandler
 from pydbzengine.helper import Utils
 from s3_minio import S3Minio
 
@@ -42,7 +44,11 @@ class TestIcebergChangeHandler(BasePostgresqlTest):
             **conf
         )
         catalog.create_namespace('my_warehouse')
-        table = catalog.create_table(identifier=("my_warehouse","test_table",), schema=DEBEZIUM_EVENT_SCHEMA)
+        debezium_event_schema = Schema(
+            NestedField(field_id=1, name="id", field_type=LongType(), required=True),
+            NestedField(field_id=2, name="data", field_type=StringType(), required=False),
+        )
+        table = catalog.create_table(identifier=("my_warehouse", "test_table",), schema=debezium_event_schema)
         print(f"Created iceberg table {table.refs()}")
 
     def test_iceberg_handler(self):

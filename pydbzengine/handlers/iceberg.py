@@ -77,7 +77,7 @@ class IcebergChangeHandler(BasePythonChangeHandler):
         consumed_at = datetime.datetime.now(datetime.timezone.utc)
         arrow_data = []
         for record in records:
-            # Create a dictionary matching the DEBEZIUM_EVENT_SCHEMA
+            # Create a dictionary matching the schema
             avro_record = self._transform_event_to_row_dict(record=record, consumed_at=consumed_at)
             arrow_data.append(avro_record)
 
@@ -90,7 +90,7 @@ class IcebergChangeHandler(BasePythonChangeHandler):
         # Parse the JSON payload
         payload = json.loads(record.value())
 
-        # Extract relevant fields based on DEBEZIUM_EVENT_SCHEMA
+        # Extract relevant fields based on schema
         op = payload.get("op")
         ts_ms = payload.get("ts_ms")
         ts_us = payload.get("ts_us")
