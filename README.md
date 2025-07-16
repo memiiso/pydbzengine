@@ -129,7 +129,31 @@ engine.run()
 ### Consume events with dlt 
 For the full code please see [dlt_consuming.py](pydbzengine/examples/dlt_consuming.py)
 
-https://github.com/memiiso/pydbzengine/blob/c4a88228aa66a2dc41b3dcc192615b1357326b66/pydbzengine/examples/dlt_consuming.py#L92-L153
+```python
+from pydbzengine import DebeziumJsonEngine
+from pydbzengine.helper import Utils
+from pydbzengine.handlers.dlt import DltChangeHandler
+from pydbzengine import Properties
+import dlt
+
+# Create a dlt pipeline and set destination. in this case DuckDb.
+dlt_pipeline = dlt.pipeline(
+    pipeline_name="dbz_cdc_events_example",
+    destination="duckdb",
+    dataset_name="dbz_data"
+)
+
+handler = DltChangeHandler(dlt_pipeline=dlt_pipeline)
+dbz_props = Properties()
+dbz_props.setProperty("name", "engine")
+dbz_props.setProperty("snapshot.mode", "always")
+# ....
+engine = DebeziumJsonEngine(properties=dbz_props, handler=handler)
+
+# Run the Debezium engine asynchronously with a timeout.
+# This runs for a limited time and then terminates automatically.
+Utils.run_engine_async(engine=engine, timeout_sec=60)
+```
 
 ### Contributors
 
