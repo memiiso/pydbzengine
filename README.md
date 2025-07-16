@@ -22,6 +22,8 @@ pip install https://github.com/memiiso/pydbzengine/archive/master.zip --upgrade 
 
 ## How to Use
 
+### Consume events With custom Python consumer
+
 1. First install the packages, `pip install pydbzengine[dev]`
 3. Second extend the BasePythonChangeHandler and implement your python consuming logic. see the example below
 
@@ -77,37 +79,37 @@ if __name__ == '__main__':
     engine.run()
 
 ```
-#### Consume events to Apache Iceberg
+### Consume events to Apache Iceberg
 
 ```python
 from pyiceberg.catalog import load_catalog
 from pydbzengine import DebeziumJsonEngine
 from pydbzengine.handlers.iceberg import IcebergChangeHandler
-from s3_minio import S3Minio
 from pydbzengine import Properties
 
 conf = {
-    "uri": self.RESTCATALOG.get_uri(),
+    "uri": "http://localhost:8181",
     # "s3.path-style.access": "true",
     "warehouse": "warehouse",
-    "s3.endpoint": self.S3MiNIO.endpoint(),
-    "s3.access-key-id": S3Minio.AWS_ACCESS_KEY_ID,
-    "s3.secret-access-key": S3Minio.AWS_SECRET_ACCESS_KEY,
+    "s3.endpoint": "http://localhost:9000",
+    "s3.access-key-id": "minioadmin",
+    "s3.secret-access-key": "minioadmin",
 }
 catalog = load_catalog(name="rest", **conf)
-handler = IcebergChangeHandler(catalog=catalog, destination_namespace=(dest_ns1_database, dest_ns2_schema,))
+handler = IcebergChangeHandler(catalog=catalog, destination_namespace=("iceberg", "debezium_cdc_data",))
 
 dbz_props = Properties()
 dbz_props.setProperty("name", "engine")
 dbz_props.setProperty("snapshot.mode", "always")
-# .... Add other debezium configuration values
+# ....
+# Add further Debezium connector configuration properties here.  For example:
+# dbz_props.setProperty("connector.class", "io.debezium.connector.mysql.MySqlConnector")
 engine = DebeziumJsonEngine(properties=dbz_props, handler=handler)
 engine.run()
 ```
 
 
-
-#### Consume events with dlt 
+### Consume events with dlt 
 For the full code please see [dlt_consuming.py](pydbzengine/examples/dlt_consuming.py)
 
 https://github.com/memiiso/pydbzengine/blob/c4a88228aa66a2dc41b3dcc192615b1357326b66/pydbzengine/examples/dlt_consuming.py#L92-L153
