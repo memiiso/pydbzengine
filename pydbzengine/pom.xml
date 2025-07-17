@@ -35,9 +35,26 @@
             <groupId>io.debezium</groupId>
             <artifactId>debezium-embedded</artifactId>
         </dependency>
+        <!-- Debezium Connectors -->
+        <dependency>
+            <groupId>io.debezium</groupId>
+            <artifactId>debezium-connector-cassandra</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.debezium</groupId>
+            <artifactId>debezium-connector-db2</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.debezium</groupId>
+            <artifactId>debezium-connector-mongodb</artifactId>
+        </dependency>
         <dependency>
             <groupId>io.debezium</groupId>
             <artifactId>debezium-connector-mysql</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.debezium</groupId>
+            <artifactId>debezium-connector-oracle</artifactId>
         </dependency>
         <dependency>
             <groupId>io.debezium</groupId>
@@ -45,8 +62,17 @@
         </dependency>
         <dependency>
             <groupId>io.debezium</groupId>
-            <artifactId>debezium-connector-mongodb</artifactId>
+            <artifactId>debezium-connector-spanner</artifactId>
         </dependency>
+        <dependency>
+            <groupId>io.debezium</groupId>
+            <artifactId>debezium-connector-sqlserver</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.debezium</groupId>
+            <artifactId>debezium-connector-vitess</artifactId>
+        </dependency>
+        <!-- Logging -->
         <dependency>
             <groupId>org.slf4j</groupId>
             <artifactId>slf4j-api</artifactId>
