@@ -38,7 +38,8 @@
         <!-- Debezium Connectors -->
         <dependency>
             <groupId>io.debezium</groupId>
-            <artifactId>debezium-connector-cassandra</artifactId>
+            <artifactId>debezium-connector-cassandra-5</artifactId>
+            <version>${version.debezium}</version>
         </dependency>
         <dependency>
             <groupId>io.debezium</groupId>
