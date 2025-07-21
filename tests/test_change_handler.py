@@ -1,7 +1,7 @@
 import logging
 from typing import List
 
-from base_postgresql_test import BasePostgresqlTest
+from base_postgresql import BasePostgresqlTest
 from pydbzengine import ChangeEvent, BasePythonChangeHandler
 from pydbzengine import DebeziumJsonEngine
 

@@ -3,7 +3,7 @@ import os
 import dlt
 import duckdb
 
-from base_postgresql_test import BasePostgresqlTest
+from base_postgresql import BasePostgresqlTest
 from pydbzengine import DebeziumJsonEngine
 from pydbzengine.handlers.dlt import DltChangeHandler
 from pydbzengine.helper import Utils
