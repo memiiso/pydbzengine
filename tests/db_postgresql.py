@@ -1,3 +1,5 @@
+import sqlalchemy
+from sqlalchemy.engine import Connection
 from testcontainers.core.config import testcontainers_config
 from testcontainers.core.waiting_utils import wait_for_logs
 from testcontainers.postgres import PostgresContainer
@@ -36,5 +38,13 @@ class DbPostgresql:
         except:
             pass
 
+    def get_connection(self) -> Connection:
+        engine = sqlalchemy.create_engine(self.CONTAINER.get_connection_url())
+        return engine.connect()
+
     def __exit__(self, exc_type, exc_value, traceback):
         self.stop()
+
+    def execute_sql(self, sql:str):
+        with self.get_connection() as conn:
+            conn.execute(sqlalchemy.text(sql))

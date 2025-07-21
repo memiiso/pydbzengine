@@ -2,6 +2,7 @@ import datetime
 import json
 import logging
 import uuid
+from abc import abstractmethod
 from typing import List, Dict
 
 import pyarrow as pa
@@ -22,19 +23,13 @@ from pyiceberg.types import (
 from pydbzengine import ChangeEvent, BasePythonChangeHandler
 
 
-class IcebergChangeHandler(BasePythonChangeHandler):
-    """
-    A change handler that uses Apache Iceberg to process Debezium change events.
-    This class receives batches of Debezium ChangeEvent objects and applies the changes
-    to the corresponding Iceberg tables.
-    """
-
-    DEBEZIUM_EVENT_PARTITION_SPEC = PartitionSpec(
+class BaseIcebergChangeHandler(BasePythonChangeHandler):
+    DEBEZIUM_TABLE_PARTITION_SPEC = PartitionSpec(
         PartitionField(source_id=10, field_id=1000, name="_consumed_at_day", transform=DayTransform())
     )
     LOGGER_NAME = "pydbzengine.iceberg.IcebergChangeHandler"
 
-    def __init__(self, catalog: "Catalog", destination_namespace: tuple, supports_variant:bool=False):
+    def __init__(self, catalog: "Catalog", destination_namespace: tuple, supports_variant: bool = False):
         """
         Initializes the IcebergChangeHandler.
         """
@@ -65,6 +60,30 @@ class IcebergChangeHandler(BasePythonChangeHandler):
             self._handle_table_changes(destination, event_records)
 
         self.log.info(f"Consumed {len(records)} records")
+
+    @abstractmethod
+    def _handle_table_changes(self, destination: str, records: List[ChangeEvent]):
+        raise NotImplementedError
+
+    def get_table(self, destination: str) -> "Table":
+        # TODO keep table object in map to avoid calling catalog
+        table_identifier: tuple = self.destination_to_table_identifier(destination)
+        return self.load_table(table_identifier=table_identifier)
+
+    def load_table(self, table_identifier):
+        return self.catalog.load_table(identifier=table_identifier)
+
+    def destination_to_table_identifier(self, destination: str) -> tuple:
+        table_name = destination.replace('.', '_').replace(' ', '_').replace('-', '_')
+        return self.destination_namespace + (table_name,)
+
+
+class IcebergChangeHandler(BaseIcebergChangeHandler):
+    """
+    A change handler that uses Apache Iceberg to process Debezium change events.
+    This class receives batches of Debezium ChangeEvent objects and applies the changes
+    to the corresponding Iceberg tables.
+    """
 
     def _handle_table_changes(self, destination: str, records: List[ChangeEvent]):
         """
@@ -114,25 +133,16 @@ class IcebergChangeHandler(BasePythonChangeHandler):
             "_consumed_at": consumed_at,
         }
 
-    def get_table(self, destination: str) -> "Table":
-        # TODO keep table object in map to avoid calling catalog
-        iceberg_table: tuple = self._resolve_table_identifier(destination)
-        return self.load_table(iceberg_table=iceberg_table)
-
-    def load_table(self, iceberg_table):
+    def load_table(self, table_identifier):
         try:
-            return self.catalog.load_table(identifier=iceberg_table)
+            return super().load_table(table_identifier=table_identifier)
         except NoSuchTableError:
-            self.log.warning(f"Iceberg table {'.'.join(iceberg_table)} not found, creating it.")
-            table = self.catalog.create_table(identifier=iceberg_table,
+            self.log.warning(f"Iceberg table {'.'.join(table_identifier)} not found, creating it.")
+            table = self.catalog.create_table(identifier=table_identifier,
                                               schema=self._target_schema,
-                                              partition_spec=self.DEBEZIUM_EVENT_PARTITION_SPEC)
-            self.log.info(f"Created iceberg table {'.'.join(iceberg_table)} with daily partitioning on _consumed_at.")
+                                              partition_spec=self.DEBEZIUM_TABLE_PARTITION_SPEC)
+            self.log.info(f"Created iceberg table {'.'.join(table_identifier)} with daily partitioning on _consumed_at.")
             return table
-
-    def _resolve_table_identifier(self, destination: str) -> tuple:
-        table_name = destination.replace('.', '_').replace(' ', '_').replace('-', '_')
-        return self.destination_namespace + (table_name,)
 
     @property
     def _target_schema(self) -> Schema:
@@ -189,3 +199,4 @@ class IcebergChangeHandler(BasePythonChangeHandler):
                 doc="Timestamp of when the event was consumed",
             ),
         )
+

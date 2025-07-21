@@ -19,8 +19,7 @@ class BasePostgresqlTest(unittest.TestCase):
         props.setProperty("name", "engine")
         props.setProperty("snapshot.mode", "always")
         props.setProperty("database.hostname", self.SOURCEPGDB.CONTAINER.get_container_host_ip())
-        props.setProperty("database.port",
-                          self.SOURCEPGDB.CONTAINER.get_exposed_port(self.SOURCEPGDB.POSTGRES_PORT_DEFAULT))
+        props.setProperty("database.port", str(self.SOURCEPGDB.CONTAINER.get_exposed_port(self.SOURCEPGDB.POSTGRES_PORT_DEFAULT)))
         props.setProperty("database.user", self.SOURCEPGDB.POSTGRES_USER)
         props.setProperty("database.password", self.SOURCEPGDB.POSTGRES_PASSWORD)
         props.setProperty("database.dbname", self.SOURCEPGDB.POSTGRES_DBNAME)
@@ -54,3 +53,6 @@ class BasePostgresqlTest(unittest.TestCase):
     def tearDown(self):
         self.SOURCEPGDB.stop()
         self.clean_offset_file()
+
+    def execute_on_source_db(self, sql:str):
+        self.SOURCEPGDB.execute_sql(sql=sql)

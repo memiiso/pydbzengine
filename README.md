@@ -19,6 +19,35 @@ A Pythonic interface for the [Debezium Engine](https://debezium.io/documentation
 
 This library acts as a bridge between the Python world and the Java-based Debezium Engine. It uses [Pyjnius](https://pyjnius.readthedocs.io/en/latest/) to manage the JVM and interact with Debezium's Java classes, exposing a clean, Pythonic API so you can focus on your data logic without writing Java code.
 
+## Pre-available Data Handling Classes
+
+`pydbzengine` comes with several built-in handlers to stream CDC events directly into common data destinations. You can also easily create your own by extending the `BasePythonChangeHandler`.
+
+### Apache Iceberg Handlers (`pydbzengine[iceberg]`)
+
+The Iceberg handlers are designed to stream CDC events directly into Apache Iceberg tables, enabling you to build a robust data lakehouse architecture. They automatically handle data serialization into the appropriate Arrow/Parquet format and manage Iceberg transactions.
+
+*   `IcebergChangeHandler`: A straightforward handler that appends change data to a source-equivalent Iceberg table using a predefined schema.
+    *   **Use Case**: Best for creating a "bronze" layer where you want to capture the raw Debezium event. The `before` and `after` payloads are stored as complete JSON strings.
+    *   **Schema**: Uses a fixed schema where complex nested fields (`source`, `before`, `after`) are stored as `StringType`. 
+        *   With consuming data as json, all source system schema changes will be absorbed automatically.
+        *   **Automatic Table Creation & Partitioning**: It automatically creates a new Iceberg table for each source table and partitions it by day on the `_consumed_at` timestamp for efficient time-series queries.
+        *   **Enriched Metadata**: It also adds `_consumed_at`, `_dbz_event_key`, and `_dbz_event_key_hash` columns for enhanced traceability.
+
+
+### dlt (data load tool) Handler (`pydbzengine[dlt]`)
+
+*   `DltChangeHandler`: This handler integrates seamlessly with the `dlt` library. It passes Debezium events to a `dlt` pipeline, allowing you to load the data into any destination `dlt` supports (e.g., DuckDB, BigQuery, Snowflake, Redshift, and more).
+    *   **Use Case**: Perfect for users who want to leverage `dlt`'s powerful features for schema inference, data normalization, and loading data into a data warehouse or database.
+
+### Base Handler for Custom Logic
+
+*   `BasePythonChangeHandler`: This is the abstract base class for creating your own custom handlers. By extending this class and implementing the `handle_batch` method, you can process change events with your own Python logic.
+    *   **Use Case**: Use this for any custom destination or logic not covered by the built-in handlers. Examples include:
+        *   Sending events to a message queue like Kafka or RabbitMQ.
+        *   Calling a custom API endpoint for each event.
+        *   Performing real-time aggregations or analytics.
+
 ## Installation
 
 ### Prerequisites
