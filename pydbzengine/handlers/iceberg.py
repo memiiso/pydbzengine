@@ -143,7 +143,8 @@ class IcebergChangeHandler(BaseIcebergChangeHandler):
             table = self.catalog.create_table(identifier=table_identifier,
                                               schema=self._target_schema,
                                               partition_spec=self.DEBEZIUM_TABLE_PARTITION_SPEC)
-            self.log.info(f"Created iceberg table {'.'.join(table_identifier)} with daily partitioning on _consumed_at.")
+            self.log.info(
+                f"Created iceberg table {'.'.join(table_identifier)} with daily partitioning on _consumed_at.")
             return table
 
     @property
@@ -236,6 +237,7 @@ class IcebergChangeHandlerV2(BaseIcebergChangeHandler):
             records=records
         )
 
+        self._handle_schema_changes(table=table, arrow_schema=enriched_arrow_data.schema)
         table.append(enriched_arrow_data)
         self.log.info(f"Appended {len(enriched_arrow_data)} records to table {'.'.join(table.name())}")
 
@@ -401,3 +403,8 @@ class IcebergChangeHandlerV2(BaseIcebergChangeHandler):
 
         self.log.info(f"Found potential primary key fields {key_field_names} for table {table_name_str}")
         return key_field_names
+
+    def _handle_schema_changes(self, table: "Table", arrow_schema: "pa.Schema"):
+        with table.update_schema() as update:
+            update.union_by_name(new_schema=arrow_schema)
+        self.log.info(f"Schema for table {'.'.join(table.name())} has been updated.")

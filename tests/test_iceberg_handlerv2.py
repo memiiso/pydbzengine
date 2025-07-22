@@ -1,9 +1,12 @@
-import unittest
+import io
+import threading
+import time
 
 import pandas as pd
+import pyarrow as pa
+import pyarrow.json as pj
+import waiting
 from pyiceberg.catalog import load_catalog
-from pyiceberg.schema import Schema
-from pyiceberg.types import LongType, NestedField, StringType
 
 from base_postgresql_test import BasePostgresqlTest
 from catalog_rest import CatalogRestContainer
@@ -24,85 +27,42 @@ class TestIcebergChangeHandler(BasePostgresqlTest):
         self.S3MiNIO.start()
         self.RESTCATALOG.start(s3_endpoint=self.S3MiNIO.endpoint())
         # Set pandas options to display all rows and columns, and prevent truncation of cell content
-        pd.set_option('display.max_rows', None)         # Show all rows
-        pd.set_option('display.max_columns', None)      # Show all columns
-        pd.set_option('display.width', None)            # Auto-detect terminal width
-        pd.set_option('display.max_colwidth', None)     # Do not truncate cell contents
+        pd.set_option('display.max_rows', None)  # Show all rows
+        pd.set_option('display.max_columns', None)  # Show all columns
+        pd.set_option('display.width', None)  # Auto-detect terminal width
+        pd.set_option('display.max_colwidth', None)  # Do not truncate cell contents
 
     def tearDown(self):
         self.SOURCEPGDB.stop()
         self.S3MiNIO.stop()
+        self.RESTCATALOG.stop()
         self.clean_offset_file()
 
-    @unittest.skip
-    def test_iceberg_catalog(self):
-        conf = {
-            "uri": self.RESTCATALOG.get_uri(),
-            # "s3.path-style.access": "true",
-            "warehouse": "warehouse",
-            "s3.endpoint": self.S3MiNIO.endpoint(),
-            "s3.access-key-id": S3Minio.AWS_ACCESS_KEY_ID,
-            "s3.secret-access-key": S3Minio.AWS_SECRET_ACCESS_KEY,
-        }
-        print(conf)
-        catalog = load_catalog(
-            name="rest",
-            **conf
-        )
-        catalog.create_namespace('my_warehouse')
-        debezium_event_schema = Schema(
-            NestedField(field_id=1, name="id", field_type=LongType(), required=True),
-            NestedField(field_id=2, name="data", field_type=StringType(), required=False),
-        )
-        table = catalog.create_table(identifier=("my_warehouse", "test_table",), schema=debezium_event_schema)
-        print(f"Created iceberg table {table.refs()}")
+    def test_read_json_lines_example(self):
+        json_data = """
+{"id": 1, "name": "Alice", "age": 30}
+{"id": 2, "name": "Bob", "age": 24}
+{"id": 3, "name": "Charlie", "age": 35}
+    """.strip()  # .strip() removes leading/trailing whitespace/newlines
+        json_buffer = io.BytesIO(json_data.encode('utf-8'))
+        json_buffer.seek(0)
+        # =============================
+        table_inferred = pj.read_json(json_buffer)
+        print("\nInferred Schema:")
+        print(table_inferred.schema)
+        # =============================
+        explicit_schema = pa.schema([
+            pa.field('id', pa.int64()),  # Integer type for 'id'
+            pa.field('name', pa.string()),  # String type for 'name'
+        ])
+        json_buffer.seek(0)
+        po = pj.ParseOptions(explicit_schema=explicit_schema)
+        table_explicit = pj.read_json(json_buffer, parse_options=po)
+        print("\nExplicit Schema:")
+        print(table_explicit.schema)
 
-    def test_iceberg_handler(self):
-        dest_ns1_database="my_warehouse"
-        dest_ns2_schema="dbz_cdc_data"
-        conf = {
-            "uri": self.RESTCATALOG.get_uri(),
-            # "s3.path-style.access": "true",
-            "warehouse": "warehouse",
-            "s3.endpoint": self.S3MiNIO.endpoint(),
-            "s3.access-key-id": S3Minio.AWS_ACCESS_KEY_ID,
-            "s3.secret-access-key": S3Minio.AWS_SECRET_ACCESS_KEY,
-        }
-        catalog = load_catalog(name="rest",**conf)
-
-        handler = IcebergChangeHandlerV2(catalog=catalog,
-                                         destination_namespace=(dest_ns1_database, dest_ns2_schema,),
-                                         event_flattening_enabled=True
-                                         )
-
-        dbz_props = self.debezium_engine_props(unwrap_messages=True)
-        engine = DebeziumJsonEngine(properties=dbz_props, handler=handler)
-        with self.assertLogs(IcebergChangeHandlerV2.LOGGER_NAME, level='INFO') as cm:
-            # run async then interrupt after timeout time to test the result!
-            Utils.run_engine_async(engine=engine, timeout_sec=44)
-
-        # for t in cm.output:
-        #     print(t)
-        self.assertRegex(text=str(cm.output), expected_regex='.*Created iceberg table.*')
-        self.assertRegex(text=str(cm.output), expected_regex='.*Appended.*records to table.*')
-
-        # catalog.create_namespace(dest_ns1_database)
-        namespaces = catalog.list_namespaces()
-        self.assertIn((dest_ns1_database,) , namespaces, msg="Namespace not found in catalog")
-
-        tables = catalog.list_tables((dest_ns1_database, dest_ns2_schema,))
-        print(tables)
-        self.assertIn(('my_warehouse', 'dbz_cdc_data', 'testc_inventory_customers'), tables, msg="Namespace not found in catalog")
-
-        tbl = catalog.load_table(identifier=('my_warehouse', 'dbz_cdc_data', 'testc_inventory_customers'))
-        data = tbl.scan().to_arrow()
-        self.assertIn("sally.thomas@acme.com", str(data))
-        self.assertIn("annek@noanswer.org", str(data))
-        self.assertEqual(data.num_rows, 4)
-        self.pprint_table(data=data)
-        #=================================================================
-        ## ==== PART 2 CONSUME CHANGES FROM BINLOG =======================
-        #=================================================================
+    def _apply_source_db_changes(self):
+        time.sleep(12)
         self.execute_on_source_db("UPDATE inventory.customers SET first_name='George__UPDATE1' WHERE ID = 1002 ;")
         # self.execute_on_source_db("ALTER TABLE inventory.customers DROP COLUMN email;")
         self.execute_on_source_db("UPDATE inventory.customers SET first_name='George__UPDATE2'  WHERE ID = 1002 ;")
@@ -110,13 +70,56 @@ class TestIcebergChangeHandler(BasePostgresqlTest):
         self.execute_on_source_db("DELETE FROM inventory.customers WHERE id = 1002 ;")
         self.execute_on_source_db("ALTER TABLE inventory.customers ADD birth_date date;")
         self.execute_on_source_db("UPDATE inventory.customers SET birth_date = '2020-01-01'  WHERE id = 1001 ;")
-        # run
-        Utils.run_engine_async(engine=engine, timeout_sec=44)
-        # test
-        # @TODO test that new field is received and added to iceberg!
-        data = tbl.scan().to_arrow()
+
+    def test_iceberg_handler(self):
+        dest_ns1_database = "my_warehouse"
+        dest_ns2_schema = "dbz_cdc_data"
+        catalog_conf = {
+            "uri": self.RESTCATALOG.get_uri(),
+            "warehouse": "warehouse",
+            "s3.endpoint": self.S3MiNIO.endpoint(),
+            "s3.access-key-id": S3Minio.AWS_ACCESS_KEY_ID,
+            "s3.secret-access-key": S3Minio.AWS_SECRET_ACCESS_KEY,
+        }
+        catalog = load_catalog(name="rest", **catalog_conf)
+        handler = IcebergChangeHandlerV2(catalog=catalog,
+                                         destination_namespace=(dest_ns1_database, dest_ns2_schema,),
+                                         event_flattening_enabled=True
+                                         )
+        dbz_props = self.debezium_engine_props(unwrap_messages=True)
+        engine = DebeziumJsonEngine(properties=dbz_props, handler=handler)
+
+        t = threading.Thread(target=self._apply_source_db_changes)
+        t.start()
+        Utils.run_engine_async(engine=engine, timeout_sec=77, blocking=False)
+
+        test_ns = (dest_ns1_database,)
+        print(catalog.list_namespaces())
+        waiting.wait(predicate=lambda: test_ns in catalog.list_namespaces(), timeout_seconds=7.5)
+
+        test_tbl = ('my_warehouse', 'dbz_cdc_data', 'testc_inventory_customers')
+        test_tbl_ns = (dest_ns1_database, dest_ns2_schema,)
+        waiting.wait(predicate=lambda: test_tbl in catalog.list_tables(test_tbl_ns), timeout_seconds=10.5)
+
+        test_tbl_data = ('my_warehouse', 'dbz_cdc_data', 'testc_inventory_customers')
+        waiting.wait(predicate=lambda: "sally.thomas@acme.com" in str(self.red_table(catalog, test_tbl_data)),
+                     timeout_seconds=10.5)
+        waiting.wait(predicate=lambda: self.red_table(catalog, test_tbl_data).num_rows >= 4, timeout_seconds=10.5)
+
+        data = self.red_table(catalog, test_tbl_data)
         self.pprint_table(data=data)
-        self.assertEqual(data.num_rows, 4)
+        # =================================================================
+        ## ==== PART 2 CONSUME CHANGES FROM BINLOG ========================
+        # =================================================================
+        waiting.wait(predicate=lambda: self.red_table(catalog, test_tbl_data).num_rows >= 7, timeout_seconds=77)
+        data = self.red_table(catalog, test_tbl_data)
+        self.pprint_table(data=data)
+
+    def red_table(self, catalog, table_identifier) -> "pa.Table":
+        tbl = catalog.load_table(identifier=table_identifier)
+        data = tbl.scan().to_arrow()
+        self.pprint_table(data)
+        return data
 
     def pprint_table(self, data):
         print("--- Iceberg Table Content ---")
