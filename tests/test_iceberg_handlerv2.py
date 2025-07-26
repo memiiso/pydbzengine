@@ -80,8 +80,8 @@ class TestIcebergChangeHandler(BasePostgresqlTest):
             "s3.access-key-id": S3Minio.AWS_ACCESS_KEY_ID,
             "s3.secret-access-key": S3Minio.AWS_SECRET_ACCESS_KEY,
         }
-        catalog = load_catalog(name="rest", **catalog_conf)
-        handler = IcebergChangeHandlerV2(catalog=catalog,
+        dbz_catalog = load_catalog(name="rest", **catalog_conf)
+        handler = IcebergChangeHandlerV2(catalog=dbz_catalog,
                                          destination_namespace=(dest_ns1_database, dest_ns2_schema,),
                                          event_flattening_enabled=True
                                          )
@@ -90,6 +90,8 @@ class TestIcebergChangeHandler(BasePostgresqlTest):
 
         Utils.run_engine_async(engine=engine, timeout_sec=77, blocking=False)
 
+        # TEST
+        catalog = load_catalog(name="rest", **catalog_conf)
         test_ns = (dest_ns1_database,)
         print(catalog.list_namespaces())
         self._wait_for_condition(
