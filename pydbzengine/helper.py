@@ -53,7 +53,3 @@ class Utils:
             # **Crucially important:** Cancel the alarm.  This prevents the timeout
             # from triggering again later if the main thread continues to run.
             signal.alarm(0)  # 0 means cancel the alarm.
-
-        # If the engine.run() finishes within the timeout, this point will be reached.
-        # No explicit return is needed as the function doesn't return anything.
-        print("Engine run completed successfully.") # Add a log message to signal success
