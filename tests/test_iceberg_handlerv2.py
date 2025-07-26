@@ -5,7 +5,6 @@ import time
 import pandas as pd
 import pyarrow as pa
 import pyarrow.json as pj
-import waiting
 from pyiceberg.catalog import load_catalog
 
 from base_postgresql_test import BasePostgresqlTest
@@ -89,29 +88,42 @@ class TestIcebergChangeHandler(BasePostgresqlTest):
         dbz_props = self.debezium_engine_props(unwrap_messages=True)
         engine = DebeziumJsonEngine(properties=dbz_props, handler=handler)
 
-        t = threading.Thread(target=self._apply_source_db_changes)
-        t.start()
         Utils.run_engine_async(engine=engine, timeout_sec=77, blocking=False)
 
         test_ns = (dest_ns1_database,)
         print(catalog.list_namespaces())
-        waiting.wait(predicate=lambda: test_ns in catalog.list_namespaces(), timeout_seconds=7.5)
+        self._wait_for_condition(
+            predicate=lambda: test_ns in catalog.list_namespaces(),
+            failure_message=f"Namespace {test_ns} did not appear in the catalog"
+        )
 
         test_tbl = ('my_warehouse', 'dbz_cdc_data', 'testc_inventory_customers')
         test_tbl_ns = (dest_ns1_database, dest_ns2_schema,)
-        waiting.wait(predicate=lambda: test_tbl in catalog.list_tables(test_tbl_ns), timeout_seconds=10.5)
+        self._wait_for_condition(
+            predicate=lambda: test_tbl in catalog.list_tables(test_tbl_ns),
+            failure_message=f"Table {test_tbl} did not appear in the tables"
+        )
 
         test_tbl_data = ('my_warehouse', 'dbz_cdc_data', 'testc_inventory_customers')
-        waiting.wait(predicate=lambda: "sally.thomas@acme.com" in str(self.red_table(catalog, test_tbl_data)),
-                     timeout_seconds=10.5)
-        waiting.wait(predicate=lambda: self.red_table(catalog, test_tbl_data).num_rows >= 4, timeout_seconds=10.5)
+        self._wait_for_condition(
+            predicate=lambda: "sally.thomas@acme.com" in str(self.red_table(catalog, test_tbl_data)),
+            failure_message=f"Expected row not consumed!"
+        )
+        self._wait_for_condition(
+            predicate=lambda: self.red_table(catalog, test_tbl_data).num_rows >= 4,
+            failure_message=f"Rows {4} did not consumed"
+        )
 
         data = self.red_table(catalog, test_tbl_data)
         self.pprint_table(data=data)
         # =================================================================
         ## ==== PART 2 CONSUME CHANGES FROM BINLOG ========================
         # =================================================================
-        waiting.wait(predicate=lambda: self.red_table(catalog, test_tbl_data).num_rows >= 7, timeout_seconds=77)
+        self._apply_source_db_changes()
+        self._wait_for_condition(
+            predicate=lambda: self.red_table(catalog, test_tbl_data).num_rows >= 7,
+            failure_message=f"Rows {7} did not consumed"
+        )
         data = self.red_table(catalog, test_tbl_data)
         self.pprint_table(data=data)
 
@@ -125,3 +137,18 @@ class TestIcebergChangeHandler(BasePostgresqlTest):
         print("--- Iceberg Table Content ---")
         print(data.to_pandas())
         print("---------------------------\n")
+
+    def _wait_for_condition(self, predicate, failure_message: str, retries: int = 10, delay_seconds: int = 2):
+        attempts = 0
+        while attempts < retries:
+            print(f"Attempt {attempts + 1}/{retries}: Checking condition...")
+            if predicate():
+                print("Condition met.")
+                return
+
+            attempts += 1
+            # Avoid sleeping after the last attempt
+            if attempts < retries:
+                time.sleep(delay_seconds)
+
+        raise TimeoutError(f"{failure_message} after {retries} attempts ({retries * delay_seconds} seconds).")
