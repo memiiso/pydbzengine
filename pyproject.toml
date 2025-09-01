@@ -9,7 +9,7 @@ include-package-data = true  # Important: Enables inclusion of non-code files
 where = ["."]
 
 [tool.setuptools.package-data]
-"*" = ["*.jar"]
+"pydbzengine" = ["debezium/libs/*.jar", "config/*"]
 
 [project]
 name = "pydbzengine"
