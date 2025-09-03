@@ -26,6 +26,7 @@ class TestIcebergChangeHandler(BasePostgresqlTest):
     def tearDown(self):
         self.SOURCEPGDB.stop()
         self.S3MiNIO.stop()
+        self.RESTCATALOG.stop()
         self.clean_offset_file()
 
     @unittest.skip

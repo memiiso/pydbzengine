@@ -46,3 +46,6 @@ class CatalogRestContainer(DockerContainer):
         catalog = self.get_catalog()
         namespaces = catalog.list_namespaces()
         print("Namespaces:", namespaces)
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.stop()

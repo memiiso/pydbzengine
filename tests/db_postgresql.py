@@ -39,7 +39,9 @@ class DbPostgresql:
             pass
 
     def get_connection(self) -> Connection:
-        engine = sqlalchemy.create_engine(self.CONTAINER.get_connection_url())
+        url = self.CONTAINER.get_connection_url()
+        print(url)
+        engine = sqlalchemy.create_engine(url)
         return engine.connect()
 
     def __exit__(self, exc_type, exc_value, traceback):
