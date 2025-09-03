@@ -20,7 +20,7 @@ def timeout_handler(signum, frame):
 class Utils:
 
     @staticmethod
-    def run_engine_async(engine, timeout_sec=22):
+    def run_engine_async(engine, timeout_sec=22, blocking=True):
         """
         Runs an engine asynchronously with a timeout.
 
@@ -37,11 +37,12 @@ class Utils:
         signal.alarm(timeout_sec)
 
         try:
-            thread = threading.Thread(target=engine.run)
+            thread = threading.Thread(target=engine.run, daemon=True)
             thread.start()
 
-            # Wait for the thread to complete (or the timeout to occur).
-            thread.join()  # This will block until the thread finishes or the signal is received.
+            if blocking:
+                # Wait for the thread to complete (or the timeout to occur).
+                thread.join()  # This will block until the thread finishes or the signal is received.
 
         except TimeoutError:
             # Handle the timeout exception.
@@ -52,7 +53,3 @@ class Utils:
             # **Crucially important:** Cancel the alarm.  This prevents the timeout
             # from triggering again later if the main thread continues to run.
             signal.alarm(0)  # 0 means cancel the alarm.
-
-        # If the engine.run() finishes within the timeout, this point will be reached.
-        # No explicit return is needed as the function doesn't return anything.
-        print("Engine run completed successfully.") # Add a log message to signal success
