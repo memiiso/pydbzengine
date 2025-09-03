@@ -88,7 +88,7 @@ def debezium_engine_props(sourcedb: DbPostgresql):
     props.setProperty("transforms", "unwrap")
     props.setProperty("transforms.unwrap.type", "io.debezium.transforms.ExtractNewRecordState")
     props.setProperty("transforms.unwrap.add.fields", "op,table,source.ts_ms,sourcedb,ts_ms")
-    props.setProperty("transforms.unwrap.delete.handling.mode", "rewrite")
+    props.setProperty("transforms.unwrap.delete.tombstone.handling.mode", "rewrite")
     # props.setProperty("debezium.transforms.unwrap.drop.tombstones", "true")
     return props
 
