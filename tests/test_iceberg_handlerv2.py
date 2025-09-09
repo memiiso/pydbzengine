@@ -78,10 +78,15 @@ class TestIcebergChangeHandlerV2(BasePostgresqlTest):
             "s3.access-key-id": S3Minio.AWS_ACCESS_KEY_ID,
             "s3.secret-access-key": S3Minio.AWS_SECRET_ACCESS_KEY,
         }
+        destination_namespace=(dest_ns1_database, dest_ns2_schema,)
         handler = IcebergChangeHandlerV2(catalog=load_catalog(name="rest", **catalog_conf),
-                                         destination_namespace=(dest_ns1_database, dest_ns2_schema,),
+                                         destination_namespace=destination_namespace,
                                          event_flattening_enabled=True
                                          )
+
+        # TEST
+        testing_catalog = load_catalog(name="rest", **catalog_conf)
+        testing_catalog.create_namespace(namespace=destination_namespace)
 
         test_dest = "inventory.customers"
         records = [
@@ -91,8 +96,6 @@ class TestIcebergChangeHandlerV2(BasePostgresqlTest):
         ]
         handler.handleJsonBatch(records)
 
-        # TEST
-        testing_catalog = load_catalog(name="rest", **catalog_conf)
         test_ns = (dest_ns1_database,)
         print(testing_catalog.list_namespaces())
         self._wait_for_condition(
