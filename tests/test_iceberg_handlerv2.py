@@ -13,7 +13,7 @@ from pydbzengine.handlers.iceberg import IcebergChangeHandlerV2
 from s3_minio import S3Minio
 
 
-class TestIcebergChangeHandler(BasePostgresqlTest):
+class TestIcebergChangeHandlerV2(BasePostgresqlTest):
     S3MiNIO = S3Minio()
     RESTCATALOG = CatalogRestContainer()
 
