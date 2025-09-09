@@ -4,7 +4,7 @@ from pyiceberg.catalog import load_catalog
 from pyiceberg.schema import Schema
 from pyiceberg.types import LongType, NestedField, StringType
 
-from base_postgresql_test import BasePostgresqlTest
+from base_postgresql import BasePostgresqlTest
 from catalog_rest import CatalogRestContainer
 from pydbzengine import DebeziumJsonEngine
 from pydbzengine.handlers.iceberg import IcebergChangeHandler
