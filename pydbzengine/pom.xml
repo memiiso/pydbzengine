@@ -73,6 +73,19 @@
             <groupId>io.debezium</groupId>
             <artifactId>debezium-connector-vitess</artifactId>
         </dependency>
+        <!-- Debezium storage -->
+        <dependency>
+            <groupId>io.debezium</groupId>
+            <artifactId>debezium-storage-jdbc</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.debezium</groupId>
+            <artifactId>debezium-storage-redis</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.debezium</groupId>
+            <artifactId>debezium-storage-s3</artifactId>
+        </dependency>
         <!-- Logging -->
         <dependency>
             <groupId>org.slf4j</groupId>
