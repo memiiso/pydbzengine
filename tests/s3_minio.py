@@ -1,5 +1,6 @@
 import json
 
+from minio import Minio
 from testcontainers.core.config import testcontainers_config
 from testcontainers.minio import MinioContainer
 
@@ -19,10 +20,20 @@ class S3Minio:
         ).with_exposed_ports(9000).with_exposed_ports(9001)
         self._client = None
 
+    def get_client(self):
+        host_ip = self.minio.get_container_host_ip()
+        exposed_port = self.minio.get_exposed_port(self.port)
+        return Minio(
+            endpoint=f"{host_ip}:{exposed_port}",
+            access_key=self.minio.access_key,
+            secret_key=self.minio.secret_key,
+            secure=False
+        )
+
     def start(self):
         testcontainers_config.ryuk_disabled = True
         self.minio.start()
-        self._client = self.minio.get_client()
+        self._client = self.get_client()
         print(f"Minio Started: {self.endpoint()}")
         print(f"Minio Web: {self.web_url()}")
         self.setup_warehouse_bucket()
