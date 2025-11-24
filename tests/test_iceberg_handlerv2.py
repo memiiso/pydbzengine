@@ -14,13 +14,12 @@ from s3_minio import S3Minio
 
 
 class TestIcebergChangeHandlerV2(BasePostgresqlTest):
-    S3MiNIO = S3Minio()
-    RESTCATALOG = CatalogRestContainer()
 
     def setUp(self):
         print("setUp")
-        self.clean_offset_file()
-        self.SOURCEPGDB.start()
+        super().setUp()
+        self.S3MiNIO = S3Minio()
+        self.RESTCATALOG = CatalogRestContainer()
         self.S3MiNIO.start()
         self.RESTCATALOG.start(s3_endpoint=self.S3MiNIO.endpoint())
         # Set pandas options to display all rows and columns, and prevent truncation of cell content
@@ -30,10 +29,9 @@ class TestIcebergChangeHandlerV2(BasePostgresqlTest):
         pd.set_option('display.max_colwidth', None)  # Do not truncate cell contents
 
     def tearDown(self):
-        self.SOURCEPGDB.stop()
+        super().tearDown()
         self.S3MiNIO.stop()
         self.RESTCATALOG.stop()
-        self.clean_offset_file()
 
     def test_read_json_lines_example(self):
         json_data = """
