@@ -10,10 +10,6 @@ class BasePostgresqlTest(unittest.TestCase):
     CURRENT_DIR = Path(__file__).parent
     OFFSET_FILE = CURRENT_DIR.joinpath('postgresql-offsets.dat')
 
-    def __init__(self):
-        super().__init__()
-        self.SOURCEPGDB = DbPostgresql()
-
     def debezium_engine_props_dict(self, unwrap_messages=True) -> dict:
         current_dir = Path(__file__).parent
         offset_file_path = current_dir.joinpath('postgresql-offsets.dat')
@@ -60,6 +56,7 @@ class BasePostgresqlTest(unittest.TestCase):
 
     def setUp(self):
         self.clean_offset_file()
+        self.SOURCEPGDB = DbPostgresql()
         self.SOURCEPGDB.start()
 
     def tearDown(self):
