@@ -5,9 +5,10 @@ from testcontainers.core.waiting_utils import wait_for_logs
 from testcontainers.postgres import PostgresContainer
 
 
-def wait_for_pg_start(self) -> None:
-    wait_for_logs(self, ".*database system is ready to accept connections.*")
-    wait_for_logs(self, ".*PostgreSQL init process complete.*")
+class DebeziumPostgresContainer(PostgresContainer):
+    def _connect(self) -> None:
+        wait_for_logs(self, ".*database system is ready to accept connections.*")
+        wait_for_logs(self, ".*PostgreSQL init process complete.*")
 
 
 class DbPostgresql:
@@ -19,15 +20,14 @@ class DbPostgresql:
     POSTGRES_PORT_DEFAULT = 5432
 
     def start(self):
-        self.sourcePgDb: PostgresContainer = (PostgresContainer(image=self.POSTGRES_IMAGE,
-                                                                port=self.POSTGRES_PORT_DEFAULT,
-                                                                username=self.POSTGRES_USER,
-                                                                password=self.POSTGRES_PASSWORD,
-                                                                dbname=self.POSTGRES_DBNAME,
-                                                                )
+        self.sourcePgDb: PostgresContainer = (DebeziumPostgresContainer(image=self.POSTGRES_IMAGE,
+                                                                         port=self.POSTGRES_PORT_DEFAULT,
+                                                                         username=self.POSTGRES_USER,
+                                                                         password=self.POSTGRES_PASSWORD,
+                                                                         dbname=self.POSTGRES_DBNAME,
+                                                                         )
                                               .with_exposed_ports(self.POSTGRES_PORT_DEFAULT)
                                               )
-        PostgresContainer._connect = wait_for_pg_start
         testcontainers_config.ryuk_disabled = True
         self.sourcePgDb.start()
         print(f"Postgresql Started: {self.sourcePgDb.get_connection_url()}")

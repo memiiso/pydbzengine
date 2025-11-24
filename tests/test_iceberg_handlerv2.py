@@ -19,6 +19,7 @@ class TestIcebergChangeHandlerV2(BasePostgresqlTest):
 
     def setUp(self):
         print("setUp")
+        super().setUp()
         self.clean_offset_file()
         self.SOURCEPGDB.start()
         self.S3MiNIO.start()
