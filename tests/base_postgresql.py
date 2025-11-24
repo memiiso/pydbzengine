@@ -9,7 +9,10 @@ from pydbzengine import Properties
 class BasePostgresqlTest(unittest.TestCase):
     CURRENT_DIR = Path(__file__).parent
     OFFSET_FILE = CURRENT_DIR.joinpath('postgresql-offsets.dat')
-    SOURCEPGDB = DbPostgresql()
+
+    def __init__(self):
+        super().__init__()
+        self.SOURCEPGDB = DbPostgresql()
 
     def debezium_engine_props_dict(self, unwrap_messages=True) -> dict:
         current_dir = Path(__file__).parent
@@ -18,9 +21,9 @@ class BasePostgresqlTest(unittest.TestCase):
         conf: dict = {}
         conf.setdefault("name", "engine")
         conf.setdefault("snapshot.mode", "always")
-        conf.setdefault("database.hostname", self.SOURCEPGDB.CONTAINER.get_container_host_ip())
+        conf.setdefault("database.hostname", self.SOURCEPGDB.sourcePgDb.get_container_host_ip())
         conf.setdefault("database.port",
-                        str(self.SOURCEPGDB.CONTAINER.get_exposed_port(self.SOURCEPGDB.POSTGRES_PORT_DEFAULT)))
+                        str(self.SOURCEPGDB.sourcePgDb.get_exposed_port(self.SOURCEPGDB.POSTGRES_PORT_DEFAULT)))
         conf.setdefault("database.user", self.SOURCEPGDB.POSTGRES_USER)
         conf.setdefault("database.password", self.SOURCEPGDB.POSTGRES_PASSWORD)
         conf.setdefault("database.dbname", self.SOURCEPGDB.POSTGRES_DBNAME)

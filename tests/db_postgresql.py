@@ -17,29 +17,29 @@ class DbPostgresql:
     POSTGRES_IMAGE = "quay.io/debezium/example-postgres:3.3"
     POSTGRES_HOST = "localhost"
     POSTGRES_PORT_DEFAULT = 5432
-    CONTAINER: PostgresContainer = (PostgresContainer(image=POSTGRES_IMAGE,
-                                                      port=POSTGRES_PORT_DEFAULT,
-                                                      username=POSTGRES_USER,
-                                                      password=POSTGRES_PASSWORD,
-                                                      dbname=POSTGRES_DBNAME,
-                                                      )
-                                    .with_exposed_ports(POSTGRES_PORT_DEFAULT)
-                                    )
-    PostgresContainer._connect = wait_for_pg_start
 
     def start(self):
+        self.sourcePgDb: PostgresContainer = (PostgresContainer(image=self.POSTGRES_IMAGE,
+                                                                port=self.POSTGRES_PORT_DEFAULT,
+                                                                username=self.POSTGRES_USER,
+                                                                password=self.POSTGRES_PASSWORD,
+                                                                dbname=self.POSTGRES_DBNAME,
+                                                                )
+                                              .with_exposed_ports(self.POSTGRES_PORT_DEFAULT)
+                                              )
+        PostgresContainer._connect = wait_for_pg_start
         testcontainers_config.ryuk_disabled = True
-        self.CONTAINER.start()
-        print(f"Postgresql Started: {self.CONTAINER.get_connection_url()}")
+        self.sourcePgDb.start()
+        print(f"Postgresql Started: {self.sourcePgDb.get_connection_url()}")
 
     def stop(self):
         try:
-            self.CONTAINER.stop()
+            self.sourcePgDb.stop()
         except:
             pass
 
     def get_connection(self) -> Connection:
-        url = self.CONTAINER.get_connection_url()
+        url = self.sourcePgDb.get_connection_url()
         print(url)
         engine = sqlalchemy.create_engine(url)
         return engine.connect()
@@ -47,6 +47,6 @@ class DbPostgresql:
     def __exit__(self, exc_type, exc_value, traceback):
         self.stop()
 
-    def execute_sql(self, sql:str):
+    def execute_sql(self, sql: str):
         with self.get_connection() as conn:
             conn.execute(sqlalchemy.text(sql))
