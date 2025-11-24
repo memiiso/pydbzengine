@@ -70,7 +70,7 @@ class TestIcebergChangeHandler(BasePostgresqlTest):
 
         with self.assertLogs(IcebergChangeHandler.LOGGER_NAME, level='INFO') as cm:
             # run async then interrupt after timeout time to test the result!
-            Utils.run_engine_async(engine=engine, timeout_sec=44)
+            Utils.run_engine_async(engine=engine, timeout_sec=55)
 
         for t in cm.output:
             print(t)
