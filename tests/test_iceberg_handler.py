@@ -68,7 +68,7 @@ class TestIcebergChangeHandler(BasePostgresqlTest):
         dbz_props = self.debezium_engine_props(unwrap_messages=False)
         engine = DebeziumJsonEngine(properties=dbz_props, handler=handler)
 
-        with self.assertLogs(IcebergChangeHandler.LOGGER_NAME, level='INFO') as cm:
+        with self.assertLogs(level='INFO') as cm:
             # run async then interrupt after timeout time to test the result!
             Utils.run_engine_async(engine=engine, timeout_sec=55)
 
