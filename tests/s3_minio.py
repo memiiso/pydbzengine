@@ -22,7 +22,7 @@ class S3Minio:
 
     def get_client(self):
         host_ip = self.minio.get_container_host_ip()
-        exposed_port = self.minio.get_exposed_port(self.port)
+        exposed_port = self.minio.get_exposed_port(self.minio.port)
         return Minio(
             endpoint=f"{host_ip}:{exposed_port}",
             access_key=self.minio.access_key,
