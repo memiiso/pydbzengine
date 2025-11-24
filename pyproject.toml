@@ -38,7 +38,8 @@ dlt = [
     "dlt>=1.5.0",
 ]
 dev = [
-    "testcontainers[minio]>=4.9.1",
+    "testcontainers[minio]==4.13.3",
+    "minio==7.2.19",
     "dlt[duckdb]>=1.5.0",
     "apache-airflow>=2.10.4",
     "psycopg2-binary",
