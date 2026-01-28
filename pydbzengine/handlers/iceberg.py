@@ -76,7 +76,8 @@ class BaseIcebergChangeHandler(BasePythonChangeHandler):
         return self.catalog.load_table(identifier=table_identifier)
 
     def destination_to_table_identifier(self, destination: str) -> tuple:
-        table_name = destination.replace('.', '_').replace(' ', '_').replace('-', '_')
+        # convert java string to python string
+        table_name = str(destination).replace('.', '_').replace(' ', '_').replace('-', '_')
         return self.destination_namespace + (table_name,)
 
 
@@ -109,7 +110,7 @@ class IcebergChangeHandler(BaseIcebergChangeHandler):
 
     def _transform_event_to_row_dict(self, record: ChangeEvent, consumed_at: datetime) -> dict:
         # Parse the JSON payload
-        payload = json.loads(record.value())
+        payload = json.loads(str(record.value()))
 
         # Extract relevant fields based on schema
         op = payload.get("op")
@@ -119,7 +120,7 @@ class IcebergChangeHandler(BaseIcebergChangeHandler):
         source = payload.get("source")
         before = payload.get("before")
         after = payload.get("after")
-        dbz_event_key = record.key()  # its string by default
+        dbz_event_key = str(record.key())  # convert java string to python string
         dbz_event_key_hash = uuid.uuid5(uuid.NAMESPACE_DNS, dbz_event_key) if dbz_event_key else None
 
         return {

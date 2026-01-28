@@ -4,7 +4,6 @@ from typing import List
 from base_postgresql import BasePostgresqlTest
 from pydbzengine import ChangeEvent, BasePythonChangeHandler
 from pydbzengine import DebeziumJsonEngine
-
 from pydbzengine.helper import Utils
 
 

@@ -46,7 +46,8 @@ class Utils:
 
         except TimeoutError:
             # Handle the timeout exception.
-            print("Engine run timed out!") # use logger here for better logging
+            print("Engine run timed out!")  # use logger here for better logging
+            engine.close()
             return  # Or potentially handle the timeout differently (e.g., attempt to stop the engine).
 
         finally:

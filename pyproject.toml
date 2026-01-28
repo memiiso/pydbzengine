@@ -13,7 +13,7 @@ where = ["."]
 
 [project]
 name = "pydbzengine"
-version = "3.3.1.0"
+version = "3.4.1.0"
 authors = [
     { name = "Memiiso Organization" },
 ]
@@ -27,18 +27,18 @@ classifiers = [
     "Programming Language :: Python :: 3",
 ]
 dependencies = [
-    "pyjnius==1.7.0",
+    "jpype1>=1.6.0",
 ]
 [project.optional-dependencies]
 iceberg = [
-    "pyiceberg>=0.9.1",
+    "pyiceberg[pyiceberg-core]>=0.10.0",
     "pyarrow",
 ]
 dlt = [
     "dlt>=1.5.0",
 ]
 dev = [
-    "testcontainers[minio]>=4.9.1",
+    "testcontainers[minio]>=4.13.3",
     "dlt[duckdb]>=1.5.0",
     "apache-airflow>=2.10.4",
     "psycopg2-binary",
