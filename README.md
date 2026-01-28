@@ -17,7 +17,7 @@ A Pythonic interface for the [Debezium Engine](https://debezium.io/documentation
 
 ## How it Works
 
-This library acts as a bridge between the Python world and the Java-based Debezium Engine. It uses [Pyjnius](https://pyjnius.readthedocs.io/en/latest/) to manage the JVM and interact with Debezium's Java classes, exposing a clean, Pythonic API so you can focus on your data logic without writing Java code.
+This library acts as a bridge between the Python world and the Java-based Debezium Engine. It uses [JPype](https://jpype.readthedocs.io/en/stable/) to manage the JVM and interact with Debezium's Java classes, exposing a clean, Pythonic API so you can focus on your data logic without writing Java code.
 
 ## Pre-available Data Handling Classes
 
