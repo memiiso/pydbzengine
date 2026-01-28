@@ -62,6 +62,7 @@ class TestIcebergChangeHandler(BasePostgresqlTest):
             "s3.secret-access-key": S3Minio.AWS_SECRET_ACCESS_KEY,
         }
         catalog = load_catalog(name="rest",**conf)
+        catalog.create_namespace(namespace=(dest_ns1_database, dest_ns2_schema,))
 
         handler = IcebergChangeHandler(catalog=catalog, destination_namespace=(dest_ns1_database, dest_ns2_schema,))
 

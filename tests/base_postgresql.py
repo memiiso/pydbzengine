@@ -3,7 +3,7 @@ import unittest
 from pathlib import Path
 
 from db_postgresql import DbPostgresql
-from pydbzengine import Properties
+from pydbzengine._jvm import Properties
 
 
 class BasePostgresqlTest(unittest.TestCase):

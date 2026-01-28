@@ -25,8 +25,8 @@ def debezium_source_events(records: List[ChangeEvent]):
     # group the events per table
     table_events: Dict[str, List[str]] = {}
     for e in records:
-        table = e.destination().replace(".", "_")
-        val = json.loads(e.value())
+        table = str(e.destination()).replace(".", "_")
+        val = json.loads(str(e.value()))
         if table in table_events:
             table_events[table].append(val)
         else:
