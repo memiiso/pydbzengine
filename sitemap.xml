@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+    <url>
+         <loc>https://memiiso.github.io/pydbzengine/</loc>
+         <lastmod>2026-01-31</lastmod>
+    </url>
+    <url>
+         <loc>https://memiiso.github.io/pydbzengine/contributing/</loc>
+         <lastmod>2026-01-31</lastmod>
+    </url>
+    <url>
+         <loc>https://memiiso.github.io/pydbzengine/how-it-works/</loc>
+         <lastmod>2026-01-31</lastmod>
+    </url>
+    <url>
+         <loc>https://memiiso.github.io/pydbzengine/installation/</loc>
+         <lastmod>2026-01-31</lastmod>
+    </url>
+    <url>
+         <loc>https://memiiso.github.io/pydbzengine/handlers/</loc>
+         <lastmod>2026-01-31</lastmod>
+    </url>
+    <url>
+         <loc>https://memiiso.github.io/pydbzengine/handlers/custom/</loc>
+         <lastmod>2026-01-31</lastmod>
+    </url>
+    <url>
+         <loc>https://memiiso.github.io/pydbzengine/handlers/dlt/</loc>
+         <lastmod>2026-01-31</lastmod>
+    </url>
+    <url>
+         <loc>https://memiiso.github.io/pydbzengine/handlers/iceberg/</loc>
+         <lastmod>2026-01-31</lastmod>
+    </url>
+</urlset>
