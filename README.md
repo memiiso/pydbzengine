@@ -7,6 +7,8 @@
 
 A Pythonic interface for the [Debezium Engine](https://debezium.io/documentation/reference/stable/development/engine.html), allowing you to consume database Change Data Capture (CDC) events directly in your Python applications.
 
+**Full Documentation**: [https://memiiso.github.io/pydbzengine](https://memiiso.github.io/pydbzengine)
+
 ## Features
 
 *   **Pure Python Interface**: Interact with the powerful Debezium Engine using simple Python classes and methods.
@@ -21,39 +23,18 @@ This library acts as a bridge between the Python world and the Java-based Debezi
 
 ## Pre-available Data Handling Classes
 
-`pydbzengine` comes with several built-in handlers to stream CDC events directly into common data destinations. You can also easily create your own by extending the `BasePythonChangeHandler`.
+`pydbzengine` comes with several built-in handlers. For detailed configuration and advanced usage, see the [Handlers Documentation](https://memiiso.github.io/pydbzengine/handlers/).
 
-### Apache Iceberg Handlers (`pydbzengine[iceberg]`)
+### Apache Iceberg Handler
+Stream CDC events directly into Apache Iceberg tables.
+*   **`IcebergChangeHandlerV2` (Recommended)**: Automatically infers schemas and manages table structures with native data types.
+*   **`IcebergChangeHandler`**: Appends raw change data (JSON) to source-equivalent tables using a fixed schema.
 
-The Iceberg handlers are designed to stream CDC events directly into Apache Iceberg tables, enabling you to build a robust data lakehouse architecture. They automatically handle data serialization into the appropriate Arrow/Parquet format and manage Iceberg transactions.
+### dlt (data load tool) Handler
+*   **`DltChangeHandler`**: Integrates with the `dlt` library to load data into any supported destination (DuckDB, BigQuery, Snowflake, etc.).
 
-*   `IcebergChangeHandler`: A straightforward handler that appends change data to a source-equivalent Iceberg table using a predefined schema.
-    *   **Use Case**: Best for creating a "bronze" layer where you want to capture the raw Debezium event. The `before` and `after` payloads are stored as complete JSON strings.
-    *   **Schema**: Uses a fixed schema where complex nested fields (`source`, `before`, `after`) are stored as `StringType`. 
-        *   With consuming data as json, all source system schema changes will be absorbed automatically.
-        *   **Automatic Table Creation & Partitioning**: It automatically creates a new Iceberg table for each source table and partitions it by day on the `_consumed_at` timestamp for efficient time-series queries.
-        *   **Enriched Metadata**: It also adds `_consumed_at`, `_dbz_event_key`, and `_dbz_event_key_hash` columns for enhanced traceability.
-
-*   `IcebergChangeHandlerV2`: A more advanced handler that automatically infers the schema from the Debezium events and creates a well-structured Iceberg table accordingly.
-    *   **Use Case**: Ideal for scenarios where you want the pipeline to automatically create tables with native data types that mirror the source. This allows for direct querying of the data without needing to parse JSON.
-    *   **Schema and Features**:
-        *   **Automatic Schema Inference**: It inspects the first batch of records for a given table and infers the schema using PyArrow, preserving native data types (e.g., `LongType`, `TimestampType`).
-        *   **Robust Type Handling**: If a field's type cannot be inferred from the initial batch (e.g., it is always `null`), it safely falls back to `StringType` to prevent errors.
-        *   **Automatic Table Creation & Partitioning**: It automatically creates a new Iceberg table for each source table and partitions it by day on the `_consumed_at` timestamp for efficient time-series queries.
-        *   **Enriched Metadata**: It also adds `_consumed_at`, `_dbz_event_key`, and `_dbz_event_key_hash` columns for enhanced traceability.
-
-### dlt (data load tool) Handler (`pydbzengine[dlt]`)
-
-*   `DltChangeHandler`: This handler integrates seamlessly with the `dlt` library. It passes Debezium events to a `dlt` pipeline, allowing you to load the data into any destination `dlt` supports (e.g., DuckDB, BigQuery, Snowflake, Redshift, and more).
-    *   **Use Case**: Perfect for users who want to leverage `dlt`'s powerful features for schema inference, data normalization, and loading data into a data warehouse or database.
-
-### Base Handler for Custom Logic
-
-*   `BasePythonChangeHandler`: This is the abstract base class for creating your own custom handlers. By extending this class and implementing the `handle_batch` method, you can process change events with your own Python logic.
-    *   **Use Case**: Use this for any custom destination or logic not covered by the built-in handlers. Examples include:
-        *   Sending events to a message queue like Kafka or RabbitMQ.
-        *   Calling a custom API endpoint for each event.
-        *   Performing real-time aggregations or analytics.
+### Custom Handlers
+*   **`BasePythonChangeHandler`**: Extend this class to implement your own custom processing logic in pure Python.
 
 ## Installation
 
@@ -102,7 +83,7 @@ pip install 'pydbzengine[dlt]'
 ```python
 from typing import List
 from pydbzengine import ChangeEvent, BasePythonChangeHandler
-from pydbzengine import Properties, DebeziumJsonEngine
+from pydbzengine import DebeziumJsonEngine
 
 
 class PrintChangeHandler(BasePythonChangeHandler):
@@ -136,13 +117,14 @@ class PrintChangeHandler(BasePythonChangeHandler):
 
 
 if __name__ == '__main__':
-    props = Properties()
-    props.setProperty("name", "engine")
-    props.setProperty("snapshot.mode", "initial_only")
-    # Add further Debezium connector configuration properties here.  For example:
-    # props.setProperty("connector.class", "io.debezium.connector.mysql.MySqlConnector")
-    # props.setProperty("database.hostname", "your_database_host")
-    # props.setProperty("database.port", "3306")
+    props = {
+        "name": "engine",
+        "snapshot.mode": "initial_only",
+        # Add further Debezium connector configuration properties here.  For example:
+        # "connector.class": "io.debezium.connector.mysql.MySqlConnector",
+        # "database.hostname": "your_database_host",
+        # "database.port": "3306",
+    }
 
     # Create a DebeziumJsonEngine instance, passing the configuration properties and the custom change event handler.
     engine = DebeziumJsonEngine(properties=props, handler=PrintChangeHandler())
@@ -156,8 +138,7 @@ if __name__ == '__main__':
 ```python
 from pyiceberg.catalog import load_catalog
 from pydbzengine import DebeziumJsonEngine
-from pydbzengine.handlers.iceberg import IcebergChangeHandler
-from pydbzengine import Properties
+from pydbzengine.handlers.iceberg import IcebergChangeHandlerV2
 
 conf = {
     "uri": "http://localhost:8181",
@@ -168,14 +149,15 @@ conf = {
     "s3.secret-access-key": "minioadmin",
 }
 catalog = load_catalog(name="rest", **conf)
-handler = IcebergChangeHandler(catalog=catalog, destination_namespace=("iceberg", "debezium_cdc_data",))
+handler = IcebergChangeHandlerV2(catalog=catalog, destination_namespace=("iceberg", "debezium_cdc_data",))
 
-dbz_props = Properties()
-dbz_props.setProperty("name", "engine")
-dbz_props.setProperty("snapshot.mode", "always")
-# ....
-# Add further Debezium connector configuration properties here.  For example:
-# dbz_props.setProperty("connector.class", "io.debezium.connector.mysql.MySqlConnector")
+dbz_props = {
+    "name": "engine",
+    "snapshot.mode": "always",
+    # ....
+    # Add further Debezium connector configuration properties here.  For example:
+    # "connector.class": "io.debezium.connector.mysql.MySqlConnector",
+}
 engine = DebeziumJsonEngine(properties=dbz_props, handler=handler)
 engine.run()
 ```
@@ -188,7 +170,6 @@ For the full code please see [dlt_consuming.py](pydbzengine/examples/dlt_consumi
 from pydbzengine import DebeziumJsonEngine
 from pydbzengine.helper import Utils
 from pydbzengine.handlers.dlt import DltChangeHandler
-from pydbzengine import Properties
 import dlt
 
 # Create a dlt pipeline and set destination. in this case DuckDb.
@@ -199,10 +180,11 @@ dlt_pipeline = dlt.pipeline(
 )
 
 handler = DltChangeHandler(dlt_pipeline=dlt_pipeline)
-dbz_props = Properties()
-dbz_props.setProperty("name", "engine")
-dbz_props.setProperty("snapshot.mode", "always")
-# ....
+dbz_props = {
+    "name": "engine",
+    "snapshot.mode": "always",
+    # ....
+}
 engine = DebeziumJsonEngine(properties=dbz_props, handler=handler)
 
 # Run the Debezium engine asynchronously with a timeout.

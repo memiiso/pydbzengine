@@ -1,0 +1,54 @@
+site_name: pydbzengine
+site_url: https://memiiso.github.io/pydbzengine
+repo_url: https://github.com/memiiso/pydbzengine
+edit_uri: edit/main/docs/
+
+theme:
+  name: material
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  features:
+    - navigation.indexes
+    - navigation.tabs
+    - navigation.top
+    - toc.integrate
+    - content.code.copy
+    - content.tabs.link
+
+nav:
+  - Home: index.md
+  - Installation: installation.md
+  - How it Works: how-it-works.md
+  - Handlers:
+      - Overview: handlers/index.md
+      - Apache Iceberg: handlers/iceberg.md
+      - dlt (data load tool): handlers/dlt.md
+      - Custom Handlers: handlers/custom.md
+  - Contributing: contributing.md
+
+markdown_extensions:
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - pymdownx.superfences
+  - admonition
+  - pymdownx.details
+  - abbr
+  - toc:
+      permalink: true

@@ -44,6 +44,9 @@ dev = [
     "psycopg2-binary",
     "pandas"
 ]
+docs = [
+    "mkdocs-material",
+]
 #[project.scripts]
 #debezium = "pydbzengine.__main__:main"
 
