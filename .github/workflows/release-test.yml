@@ -28,6 +28,7 @@ jobs:
 
       - name: Publish main to Test Pypi
         if: github.event_name == 'push' && startsWith(github.ref, 'refs/heads/main')
+        continue-on-error: true
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           user: __token__
