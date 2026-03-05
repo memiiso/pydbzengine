@@ -129,7 +129,7 @@ def main():
 
     # Run the Debezium engine asynchronously with a timeout.  This allows the example
     # to run for a limited time and then terminate automatically.
-    Utils.run_engine_async(engine=engine, timeout_sec=60)
+    Utils.run_engine_until_snapshot(engine)
     # engine.run()  # This would be used for synchronous execution (without timeout)
 
     # ================ PRINT THE CONSUMED DATA FROM DUCKDB ===========================

@@ -54,3 +54,48 @@ class Utils:
             # **Crucially important:** Cancel the alarm.  This prevents the timeout
             # from triggering again later if the main thread continues to run.
             signal.alarm(0)  # 0 means cancel the alarm.
+
+    @staticmethod
+    def run_engine_until_snapshot(engine, poll_interval_sec=1):
+        """
+        Run Debezium engine and automatically stop when the initial
+        snapshot is completed (snapshot.mode=initial_only).
+
+        The engine runs in a background thread while this function
+        periodically checks for the snapshot completion log message.
+        """
+
+        import threading
+        import time
+        import logging
+
+        logger = logging.getLogger(__name__)
+
+        def _run():
+            engine.run()
+
+        thread = threading.Thread(target=_run, daemon=True)
+        thread.start()
+
+        try:
+            while thread.is_alive():
+
+                # read logs emitted by debezium
+                log_output = logging.root.handlers
+
+                for handler in log_output:
+                    if hasattr(handler, "stream"):
+                        try:
+                            stream_value = handler.stream.getvalue()
+                        except Exception:
+                            continue
+
+                        if "Snapshot completed" in stream_value:
+                            logger.info("Snapshot completion detected. Closing engine.")
+                            engine.close()
+                            return
+
+                time.sleep(poll_interval_sec)
+
+        finally:
+            thread.join()
