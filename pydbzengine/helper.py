@@ -1,21 +1,5 @@
-import signal
 import threading
-
-def timeout_handler(signum, frame):
-    """
-    Signal handler for timeouts.
-
-    Raises a TimeoutError when the specified timeout is reached.
-
-    Args:
-        signum: The signal number (unused).
-        frame: The current stack frame (unused).
-
-    Raises:
-        TimeoutError: If the timeout is reached.
-    """
-    raise TimeoutError("Engine run timed out!")
-
+import logging
 
 class Utils:
 
@@ -26,34 +10,33 @@ class Utils:
 
         This method runs the given engine's `run` method in a separate thread
         and applies a timeout.  If the engine's `run` method doesn't complete
-        within the specified timeout, a TimeoutError is raised, and the thread
-        is interrupted.
+        within the specified timeout, the engine is closed.
 
         Args:
-            engine: The engine object to run.  It is expected to have a `run` method.
+            engine: The engine object to run.  It is expected to have run() and close() methods.
             timeout_sec: The timeout duration in seconds.  Defaults to 22 seconds.
+            blocking: If True, blocks until the engine finishes or times out.
         """
-        signal.signal(signal.SIGALRM, timeout_handler)
-        signal.alarm(timeout_sec)
+        logger = logging.getLogger("pydbzengine.helper.Utils")
 
-        try:
-            thread = threading.Thread(target=engine.run, daemon=True)
-            thread.start()
+        thread = threading.Thread(target=engine.run, daemon=True)
+        thread.start()
+
+        if timeout_sec is not None and timeout_sec > 0:
+            def _timeout_shutdown():
+                if thread.is_alive():
+                    logger.info("Engine run timed out! Closing engine.")
+                    engine.close()
+
+            timer = threading.Timer(timeout_sec, _timeout_shutdown)
+            timer.daemon = True
+            timer.start()
 
             if blocking:
-                # Wait for the thread to complete (or the timeout to occur).
-                thread.join()  # This will block until the thread finishes or the signal is received.
-
-        except TimeoutError:
-            # Handle the timeout exception.
-            print("Engine run timed out!")  # use logger here for better logging
-            engine.close()
-            return  # Or potentially handle the timeout differently (e.g., attempt to stop the engine).
-
-        finally:
-            # **Crucially important:** Cancel the alarm.  This prevents the timeout
-            # from triggering again later if the main thread continues to run.
-            signal.alarm(0)  # 0 means cancel the alarm.
+                thread.join()
+                timer.cancel()
+        elif blocking:
+            thread.join()
 
     @staticmethod
     def run_engine_until_snapshot(engine, poll_interval_sec=1):
@@ -68,32 +51,50 @@ class Utils:
         import threading
         import time
         import logging
+        from pathlib import Path
 
         logger = logging.getLogger(__name__)
 
         def _run():
             engine.run()
 
+        # Check the current size of the log file to avoid scanning historical logs
+        log_file = Path("logs/pydbzengine.log")
+        initial_seek = 0
+        if log_file.exists():
+            initial_seek = log_file.stat().st_size
+
         thread = threading.Thread(target=_run, daemon=True)
         thread.start()
 
         try:
             while thread.is_alive():
+                # 1. Primary check: check Log4j2 log file
+                if log_file.exists():
+                    try:
+                        with open(log_file, "r", encoding="utf-8", errors="ignore") as f:
+                            f.seek(initial_seek)
+                            content = f.read()
+                            if "Snapshot completed" in content:
+                                logger.info("Snapshot completion detected in log file. Closing engine.")
+                                engine.close()
+                                return
+                    except Exception:
+                        pass
 
-                # read logs emitted by debezium
+                # 2. Fallback check: check Python logging root handlers (safe check)
                 log_output = logging.root.handlers
-
                 for handler in log_output:
                     if hasattr(handler, "stream"):
                         try:
-                            stream_value = handler.stream.getvalue()
+                            if hasattr(handler.stream, "getvalue"):
+                                stream_value = handler.stream.getvalue()
+                                if "Snapshot completed" in stream_value:
+                                    logger.info("Snapshot completion detected in stream handler. Closing engine.")
+                                    engine.close()
+                                    return
                         except Exception:
                             continue
-
-                        if "Snapshot completed" in stream_value:
-                            logger.info("Snapshot completion detected. Closing engine.")
-                            engine.close()
-                            return
 
                 time.sleep(poll_interval_sec)
 

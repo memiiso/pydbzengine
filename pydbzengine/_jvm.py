@@ -1,4 +1,5 @@
 import sys
+import os
 import traceback
 from pathlib import Path
 from typing import List
@@ -11,6 +12,12 @@ DEBEZIUM_CONF_DIR = Path(__file__).parent.joinpath("config").as_posix()
 
 # Manually expand jars (JPype doesn't support glob patterns in classpath like pyjnius)
 _jars = list(DEBEZIUM_JAVA_LIBS_DIR.glob("*.jar"))
+if not _jars:
+    raise ImportError(
+        "Debezium jar files not found in pydbzengine/debezium/libs/. "
+        "Please download the libraries by running the install_libs.sh script first!"
+    )
+
 CLASS_PATHS = [str(j) for j in _jars]
 CLASS_PATHS.append(DEBEZIUM_CONF_DIR)
 
@@ -41,7 +48,15 @@ if not jpype.isJVMStarted():
                 jvm_path = str(p)
                 break
 
-    jpype.startJVM(jvm_path, classpath=CLASS_PATHS)
+    # Load custom JVM options from environment variable or default to standard streaming limits
+    jvm_opts = []
+    env_opts = os.environ.get("PYDBZ_JVM_OPTS")
+    if env_opts:
+        jvm_opts = env_opts.split()
+    else:
+        jvm_opts = ["-Xms256m", "-Xmx2g", "-XX:+UseG1GC"]
+
+    jpype.startJVM(jvm_path, *jvm_opts, classpath=CLASS_PATHS)
     print("JVM started.")
 
 ################# STEP 3 JAVA REFLECTION CLASSES #################
@@ -74,6 +89,7 @@ class PythonChangeConsumer:
 
     def __init__(self):
         self.handler: "BasePythonChangeHandler" = None  # The Python handler instance.
+        self._exception = None  # Store any Python exception raised during callback execution.
 
     @jpype.JOverride
     def handleBatch(self, records: List["ChangeEvent"], committer: "RecordCommitter"):
@@ -96,6 +112,7 @@ class PythonChangeConsumer:
             print("ERROR: failed to consume events in python")
             print(str(e))
             print(traceback.format_exc())
+            self._exception = e  # Capture the exception to re-raise it on caller thread.
             JavaLangThread.currentThread().interrupt()  # Interrupt the Debezium engine on error.
 
     @jpype.JOverride

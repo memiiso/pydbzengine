@@ -1,6 +1,7 @@
 site_name: pydbzengine
 site_url: https://memiiso.github.io/pydbzengine
 repo_url: https://github.com/memiiso/pydbzengine
+repo_name: memiiso/pydbzengine
 edit_uri: edit/main/docs/
 
 theme:
@@ -24,6 +25,10 @@ theme:
     - navigation.indexes
     - navigation.tabs
     - navigation.top
+    - navigation.instant
+    - navigation.tracking
+    - search.suggest
+    - search.highlight
     - toc.integrate
     - content.code.copy
     - content.tabs.link
@@ -32,11 +37,14 @@ nav:
   - Home: index.md
   - Installation: installation.md
   - How it Works: how-it-works.md
+  - Configuration: configuration.md
   - Handlers:
       - Overview: handlers/index.md
       - Apache Iceberg: handlers/iceberg.md
       - dlt (data load tool): handlers/dlt.md
       - Custom Handlers: handlers/custom.md
+  - Apache Airflow: airflow.md
+  - Helper Utilities: helpers.md
   - Contributing: contributing.md
 
 markdown_extensions:

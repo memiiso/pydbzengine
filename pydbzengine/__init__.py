@@ -126,7 +126,10 @@ class DebeziumJsonEngine:
         """
         # Set the handler for the consumer.
         self.consumer.set_change_handler(self._handler)
+        self.consumer._exception = None  # Reset any previous exception
         self.engine.run()
+        if self.consumer._exception:
+            raise self.consumer._exception
 
     def close(self):
         """
@@ -142,4 +145,10 @@ class DebeziumJsonEngine:
         """
         Interrupts the Debezium embedded engine.
         """
+        self.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
         self.close()

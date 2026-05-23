@@ -20,8 +20,18 @@ Contributions are welcome! Whether it's reporting a bug, improving documentation
 1.  **Create a Branch**: Use a descriptive name for your feature or bug fix.
 2.  **Make Changes**: Write your code and tests.
 3.  **Run Tests**:
+    
+    > [!IMPORTANT]
+    > **Docker Prerequisite**: The integration test suite uses `testcontainers` to spin up real PostgreSQL database, Apache Iceberg REST catalog, and MinIO storage instances. Docker must be running on your machine to execute the tests.
+    
+    To run the entire test suite:
     ```shell
     pytest
+    ```
+    
+    To execute a specific test file (e.g., Iceberg V2 handlers):
+    ```shell
+    pytest tests/test_iceberg_handlerv2.py
     ```
 4.  **Update Documentation**: If you're adding a new feature or changing behavior, update the relevant `docs/` files.
 5.  **Submit a Pull Request**: Push your branch to your fork and create a PR against the `main` branch.

@@ -20,3 +20,41 @@ At its core, `pydbzengine` leverages [JPype](https://jpype.readthedocs.io/en/sta
 ## Performance Considerations
 
 By processing events in batches and leveraging Arrow/Parquet internally for handlers like Iceberg, `pydbzengine` maintains high throughput while providing the flexibility of Python.
+
+---
+
+## JVM & Troubleshooting
+
+Because `pydbzengine` operates by running a Java Virtual Machine (JVM) inside the Python process using JPype, you may run into JVM-specific initialization errors. Here is how to resolve them:
+
+### 1. `JVMNotSupportedException` or Cannot Locate JVM
+If JPype cannot automatically find your Java installation, you will see errors during engine startup.
+
+*   **Solution**: Ensure that **JDK 17 or newer** is installed.
+*   **Environment Variable**: Set the `JAVA_HOME` environment variable pointing to your JDK home directory:
+    ```shell
+    # macOS example (add to ~/.zshrc or ~/.bash_profile)
+    export JAVA_HOME=$(/usr/libexec/java_home -v 17)
+    
+    # Linux example
+    export JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
+    ```
+
+### 2. `JVMAlreadyStartedException`
+JPype starting restriction means the JVM can **only be initialized once** per Python process. If another library starts the JVM, or if you run multiple tests that independently initialize JVM setups, JPype will throw a JVM already started warning or error.
+
+*   **Solution**: The initialization module in `pydbzengine._jvm` checks `jpype.isJVMStarted()` before startup. However, if you are writing custom JVM startup scripts, always wrap it:
+    ```python
+    import jpype
+    if not jpype.isJVMStarted():
+        jpype.startJVM(...)
+    ```
+
+### 3. ClassNotFoundError (Debezium classes not found)
+If the Debezium engine fails with Java class definition errors, the `.jar` dependencies might be missing or corrupted.
+
+*   **Solution**: Re-run the installation of the package or, if developing locally, execute:
+    ```shell
+    ./pydbzengine/install_libs.sh
+    ```
+    This script downloads and copies all required connector jar files from Maven into the library directory `pydbzengine/debezium/libs`.

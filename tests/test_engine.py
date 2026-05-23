@@ -27,3 +27,34 @@ class TestDebeziumJsonEngine(unittest.TestCase):
                                     ".*Please provide handler.*"):  # Wrong message
             engine = DebeziumJsonEngine(properties=props, handler=None)
             engine.run()
+
+    def test_handler_exception_propagation(self):
+        from unittest.mock import patch, MagicMock
+
+        props = Properties()
+        props.setProperty("name", "my-connector")
+        props.setProperty("connector.class", "io.debezium.connector.postgresql.PostgresConnector")
+
+        class FailingHandler(BasePythonChangeHandler):
+            def handleJsonBatch(self, records):
+                raise ValueError("Oops, simulation error!")
+
+        handler = FailingHandler()
+        engine = DebeziumJsonEngine(properties=props, handler=handler)
+
+        # Mock the Java engine's run to simulate Java invoking our consumer callback
+        mock_java_engine = MagicMock()
+        def mock_java_run():
+            try:
+                engine.consumer.handleBatch([], MagicMock())
+            except Exception:
+                pass
+        mock_java_engine.run.side_effect = mock_java_run
+        engine.__dict__["engine"] = mock_java_engine
+
+        try:
+            with self.assertRaisesRegex(ValueError, "Oops, simulation error!"):
+                engine.run()
+        finally:
+            from pydbzengine._jvm import JavaLangThread
+            JavaLangThread.interrupted()

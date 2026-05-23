@@ -15,6 +15,8 @@ A Pythonic interface for the [Debezium Engine](https://debezium.io/documentation
 *   **Pluggable Event Handlers**: Easily create custom handlers to process CDC events according to your specific needs.
 *   **Built-in Iceberg Handler**: Stream change events directly into Apache Iceberg tables with zero boilerplate.
 *   **Seamless Integration**: Designed to work with popular Python data tools like [dlt (data load tool)](https://dlthub.com/).
+*   **Apache Airflow Operator**: Run Debezium engines directly within Airflow DAGs using the built-in [DebeziumEngineOperator](file:///Users/simseki/IdeaProjects/pydbzengine/pydbzengine/airflow.py#L12-L25).
+*   **Asynchronous & Snapshot Helpers**: Run engines with time limits or terminate them automatically once initial snapshots complete using [Utils](file:///Users/simseki/IdeaProjects/pydbzengine/pydbzengine/helper.py#L20-L102).
 *   **All Debezium Connectors**: Supports all standard Debezium connectors (PostgreSQL, MySQL, SQL Server, Oracle, etc.).
 
 ## How it Works
@@ -39,46 +41,48 @@ Stream CDC events directly into Apache Iceberg tables.
 ## Installation
 
 ### Prerequisites
-You must have a **Java Development Kit (JDK) version 11 or newer** installed and available in your system's `PATH`.
+You must have a **Java Development Kit (JDK) version 17 or newer** installed and available in your system's `PATH`.
 
 ### Recommended Installation: From GitHub
 
-Due to the package size (including `.jar` artifacts), new versions are not published to PyPI. It is **recommended to install the package directly from GitHub** to get the latest features and fixes.
+> [!WARNING]
+> Due to the package size (including `.jar` artifacts), new versions are no longer published to PyPI. The package on PyPI is outdated. It is **highly recommended to install the package directly from GitHub** to get the latest features and fixes.
 
 You can install either the latest development version from the `main` branch or a specific, stable version from a release tag.
 
 **To install the latest development version:**
 ```shell
 # For core functionality
-pip install git+https://github.com/memiiso/pydbzengine.git
+pip install "git+https://github.com/memiiso/pydbzengine.git"
 
 # With extras (e.g., iceberg, dlt)
-pip install 'pydbzengine[iceberg]@git+https://github.com/memiiso/pydbzengine.git'
-pip install 'pydbzengine[dlt]@git+https://github.com/memiiso/pydbzengine.git'
+pip install "pydbzengine[iceberg] @ git+https://github.com/memiiso/pydbzengine.git"
+pip install "pydbzengine[dlt] @ git+https://github.com/memiiso/pydbzengine.git"
+pip install "pydbzengine[dev] @ git+https://github.com/memiiso/pydbzengine.git"
 
-# To install a specific version from a release tag (e.g., 3.2.0.0):
-pip install git+https://github.com/memiiso/pydbzengine.git@3.2.0.0
+# To install a specific version from a release tag (e.g., 3.4.1.0):
+pip install "pydbzengine @ git+https://github.com/memiiso/pydbzengine.git@3.4.1.0"
 ```
 
-### Alternative: From PyPI (May be Outdated)
+### Alternative: From PyPI (Outdated Version)
 
-An older version is available on PyPI. You can install it, but be aware that it may not have the latest updates.
+An older version is available on PyPI. You can install it, but be aware that it lacks recent features and updates.
 
 ```shell
 # For core functionality
 pip install pydbzengine
 
 # With extras
-pip install 'pydbzengine[iceberg]'
-pip install 'pydbzengine[dlt]'
+pip install "pydbzengine[iceberg]"
+pip install "pydbzengine[dlt]"
 ```
 
 ## How to Use
 
 ### Consume events With custom Python consumer
 
-1. First install the packages, `pip install pydbzengine[dev]`
-3. Second extend the BasePythonChangeHandler and implement your python consuming logic. see the example below
+1. First install the packages: `pip install "pydbzengine[dev] @ git+https://github.com/memiiso/pydbzengine.git"`
+2. Second, extend the [BasePythonChangeHandler](file:///Users/simseki/IdeaProjects/pydbzengine/pydbzengine/__init__.py#L44-L66) and implement your Python consuming logic. See the example below:
 
 ```python
 from typing import List
