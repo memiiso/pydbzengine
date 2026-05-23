@@ -25,8 +25,9 @@ class MyCustomHandler(BasePythonChangeHandler):
 
 ## The ChangeEvent Object
 
-The `ChangeEvent` object provides the following methods:
+The `ChangeEvent` object mimics the Debezium event model and provides the following Python methods to access event payload elements:
 
-- `destination()`: Returns the destination topic/table name.
-- `key()`: Returns the JSON string representing the event key.
-- `value()`: Returns the JSON string representing the event value.
+*   **`destination() -> str`**: Returns the destination topic or table name (e.g. `inventory.customers`).
+*   **`key() -> str`**: Returns the JSON string representing the event's primary key(s) (e.g. `'{"id": 1001}'`).
+*   **`value() -> str`**: Returns the JSON string representing the CDC event payload (e.g. contains `before`, `after`, `op`, and `source` elements).
+*   **`partition() -> int`**: Returns the partition number the event belongs to.
