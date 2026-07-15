@@ -4,38 +4,26 @@ from pyiceberg.catalog import load_catalog
 from pyiceberg.schema import Schema
 from pyiceberg.types import LongType, NestedField, StringType
 
-from base_postgresql import BasePostgresqlTest
-from catalog_rest import CatalogRestContainer
+from base_postgresql import BaseIcebergTest
+from iceberg_catalog import IcebergCatalogContainer
 from pydbzengine import DebeziumJsonEngine
 from pydbzengine.handlers.iceberg import IcebergChangeHandler
 from pydbzengine.helper import Utils
-from s3_minio import S3Minio
+from minio_container import MinioContainer
 
 
-class TestIcebergChangeHandler(BasePostgresqlTest):
+class TestIcebergChangeHandler(BaseIcebergTest):
 
-    def setUp(self):
-        print("setUp")
-        super().setUp()
-        self.S3MiNIO = S3Minio()
-        self.RESTCATALOG = CatalogRestContainer()
-        self.S3MiNIO.start()
-        self.RESTCATALOG.start(s3_endpoint=self.S3MiNIO.endpoint())
-
-    def tearDown(self):
-        super().tearDown()
-        self.S3MiNIO.stop()
-        self.RESTCATALOG.stop()
 
     @unittest.skip
     def test_iceberg_catalog(self):
         conf = {
-            "uri": self.RESTCATALOG.get_uri(),
+            "uri": self.rest_catalog.get_uri(),
             # "s3.path-style.access": "true",
             "warehouse": "warehouse",
-            "s3.endpoint": self.S3MiNIO.endpoint(),
-            "s3.access-key-id": S3Minio.AWS_ACCESS_KEY_ID,
-            "s3.secret-access-key": S3Minio.AWS_SECRET_ACCESS_KEY,
+            "s3.endpoint": self.minio_container.endpoint(),
+            "s3.access-key-id": MinioContainer.AWS_ACCESS_KEY_ID,
+            "s3.secret-access-key": MinioContainer.AWS_SECRET_ACCESS_KEY,
         }
         print(conf)
         catalog = load_catalog(
@@ -54,12 +42,12 @@ class TestIcebergChangeHandler(BasePostgresqlTest):
         dest_ns1_database="my_warehouse"
         dest_ns2_schema="dbz_cdc_data"
         conf = {
-            "uri": self.RESTCATALOG.get_uri(),
+            "uri": self.rest_catalog.get_uri(),
             # "s3.path-style.access": "true",
             "warehouse": "warehouse",
-            "s3.endpoint": self.S3MiNIO.endpoint(),
-            "s3.access-key-id": S3Minio.AWS_ACCESS_KEY_ID,
-            "s3.secret-access-key": S3Minio.AWS_SECRET_ACCESS_KEY,
+            "s3.endpoint": self.minio_container.endpoint(),
+            "s3.access-key-id": MinioContainer.AWS_ACCESS_KEY_ID,
+            "s3.secret-access-key": MinioContainer.AWS_SECRET_ACCESS_KEY,
         }
         catalog = load_catalog(name="rest",**conf)
         catalog.create_namespace(namespace=(dest_ns1_database, dest_ns2_schema,))

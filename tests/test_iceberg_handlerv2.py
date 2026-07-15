@@ -6,31 +6,24 @@ import pyarrow as pa
 import pyarrow.json as pj
 from pyiceberg.catalog import load_catalog
 
-from base_postgresql import BasePostgresqlTest
-from catalog_rest import CatalogRestContainer
+from base_postgresql import BaseIcebergTest
+from iceberg_catalog import IcebergCatalogContainer
 from mock_events import MockChangeEvent
 from pydbzengine.handlers.iceberg import IcebergChangeHandlerV2
-from s3_minio import S3Minio
+from minio_container import MinioContainer
 
 
-class TestIcebergChangeHandlerV2(BasePostgresqlTest):
-    def setUp(self):
-        print("setUp")
-        super().setUp()
-        self.S3MiNIO = S3Minio()
-        self.RESTCATALOG = CatalogRestContainer()
-        self.S3MiNIO.start()
-        self.RESTCATALOG.start(s3_endpoint=self.S3MiNIO.endpoint())
+class TestIcebergChangeHandlerV2(BaseIcebergTest):
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
         # Set pandas options to display all rows and columns, and prevent truncation of cell content
         pd.set_option("display.max_rows", None)  # Show all rows
         pd.set_option("display.max_columns", None)  # Show all columns
         pd.set_option("display.width", None)  # Auto-detect terminal width
         pd.set_option("display.max_colwidth", None)  # Do not truncate cell contents
 
-    def tearDown(self):
-        super().tearDown()
-        self.S3MiNIO.stop()
-        self.RESTCATALOG.stop()
+
 
     def test_read_json_lines_example(self):
         json_data = """
@@ -81,11 +74,11 @@ class TestIcebergChangeHandlerV2(BasePostgresqlTest):
         dest_ns1_database = "my_warehouse"
         dest_ns2_schema = "dbz_cdc_data"
         catalog_conf = {
-            "uri": self.RESTCATALOG.get_uri(),
+            "uri": self.rest_catalog.get_uri(),
             "warehouse": "warehouse",
-            "s3.endpoint": self.S3MiNIO.endpoint(),
-            "s3.access-key-id": S3Minio.AWS_ACCESS_KEY_ID,
-            "s3.secret-access-key": S3Minio.AWS_SECRET_ACCESS_KEY,
+            "s3.endpoint": self.minio_container.endpoint(),
+            "s3.access-key-id": MinioContainer.AWS_ACCESS_KEY_ID,
+            "s3.secret-access-key": MinioContainer.AWS_SECRET_ACCESS_KEY,
         }
         destination_namespace = (
             dest_ns1_database,
@@ -212,11 +205,11 @@ class TestIcebergChangeHandlerV2(BasePostgresqlTest):
             f"dbz_test_{namespace_suffix}" if namespace_suffix else "dbz_test"
         )
         catalog_conf = {
-            "uri": self.RESTCATALOG.get_uri(),
+            "uri": self.rest_catalog.get_uri(),
             "warehouse": "warehouse",
-            "s3.endpoint": self.S3MiNIO.endpoint(),
-            "s3.access-key-id": S3Minio.AWS_ACCESS_KEY_ID,
-            "s3.secret-access-key": S3Minio.AWS_SECRET_ACCESS_KEY,
+            "s3.endpoint": self.minio_container.endpoint(),
+            "s3.access-key-id": MinioContainer.AWS_ACCESS_KEY_ID,
+            "s3.secret-access-key": MinioContainer.AWS_SECRET_ACCESS_KEY,
         }
         destination_namespace = (
             dest_ns1_database,
