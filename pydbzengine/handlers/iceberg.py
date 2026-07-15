@@ -55,6 +55,9 @@ class BaseIcebergChangeHandler(BasePythonChangeHandler):
         table_events: Dict[str, list] = {}
         for record in records:
             destination = record.destination()
+            if not destination:
+                self.log.warning("Skipping record with empty destination.")
+                continue
             if destination not in table_events:
                 table_events[destination] = []
             table_events[destination].append(record)
@@ -267,28 +270,23 @@ class IcebergChangeHandlerV2(BaseIcebergChangeHandler):
             dbz_event_key_hashes.append(key_hash)
 
         # Create PyArrow arrays for each metadata column
-        consumed_at_array = pa.array([datetime.datetime.now(datetime.timezone.utc)] * num_records,
-                                     type=pa.timestamp('us', tz='UTC'))
+        now = datetime.datetime.now(datetime.timezone.utc)
+        consumed_at_array = pa.array([now] * num_records, type=pa.timestamp('us', tz='UTC'))
         dbz_event_key_array = pa.array(dbz_event_keys, type=pa.string())
         dbz_event_key_hash_array = pa.array(dbz_event_key_hashes, type=pa.string())
 
-        # Replace the null columns in the Arrow table with the populated arrays.
-        # This uses set_column, which is efficient for replacing entire columns.
-        enriched_table = arrow_table.set_column(
-            arrow_table.schema.get_field_index("_consumed_at"),
-            "_consumed_at",
-            consumed_at_array
-        )
-        enriched_table = enriched_table.set_column(
-            enriched_table.schema.get_field_index("_dbz_event_key"),
-            "_dbz_event_key",
-            dbz_event_key_array
-        )
-        enriched_table = enriched_table.set_column(
-            enriched_table.schema.get_field_index("_dbz_event_key_hash"),
-            "_dbz_event_key_hash",
-            dbz_event_key_hash_array
-        )
+        # Replace or append the columns in the Arrow table with the populated arrays.
+        enriched_table = arrow_table
+        for col_name, col_array in [
+            ("_consumed_at", consumed_at_array),
+            ("_dbz_event_key", dbz_event_key_array),
+            ("_dbz_event_key_hash", dbz_event_key_hash_array),
+        ]:
+            idx = enriched_table.schema.get_field_index(col_name)
+            if idx != -1:
+                enriched_table = enriched_table.set_column(idx, col_name, col_array)
+            else:
+                enriched_table = enriched_table.append_column(col_name, col_array)
 
         return enriched_table
 
@@ -372,6 +370,10 @@ class IcebergChangeHandlerV2(BaseIcebergChangeHandler):
                 sanitized_nested_schema = self._sanitize_schema_fields(nested_schema)
                 # Recreate the field with the new, sanitized struct type.
                 new_fields.append(field.with_type(pa.struct(sanitized_nested_schema)))
+            elif pa.types.is_list(field_type):
+                value_type = field_type.value_type
+                sanitized_val_fields = self._sanitize_schema_fields(pa.schema([pa.field("item", value_type)]))
+                new_fields.append(field.with_type(pa.list_(sanitized_val_fields[0].type)))
             else:
                 # Not a null or struct, so we keep the field as is.
                 new_fields.append(field)
@@ -431,7 +433,7 @@ class IcebergChangeHandlerV2(BaseIcebergChangeHandler):
         return names
 
     def _handle_schema_changes(self, table: "Table", arrow_schema: "pa.Schema"):
-        existing_names = set(table.schema().column_names)
+        existing_names = self._get_arrow_field_names(table.schema().as_arrow())
         new_names = self._get_arrow_field_names(arrow_schema)
         if not new_names.issubset(existing_names):
             with table.update_schema() as update:

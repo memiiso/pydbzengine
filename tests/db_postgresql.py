@@ -15,19 +15,18 @@ class DbPostgresql:
     POSTGRES_USER = "postgres"
     POSTGRES_PASSWORD = "postgres"
     POSTGRES_DBNAME = "postgres"
-    POSTGRES_IMAGE = "quay.io/debezium/example-postgres:3.3"
+    POSTGRES_IMAGE = "quay.io/debezium/example-postgres:3.4"
     POSTGRES_HOST = "localhost"
     POSTGRES_PORT_DEFAULT = 5432
 
     def start(self):
-        self.sourcePgDb: PostgresContainer = (DebeziumPostgresContainer(image=self.POSTGRES_IMAGE,
-                                                                         port=self.POSTGRES_PORT_DEFAULT,
-                                                                         username=self.POSTGRES_USER,
-                                                                         password=self.POSTGRES_PASSWORD,
-                                                                         dbname=self.POSTGRES_DBNAME,
-                                                                         )
-                                              .with_exposed_ports(self.POSTGRES_PORT_DEFAULT)
-                                              )
+        self.sourcePgDb: PostgresContainer = DebeziumPostgresContainer(
+            image=self.POSTGRES_IMAGE,
+            port=self.POSTGRES_PORT_DEFAULT,
+            username=self.POSTGRES_USER,
+            password=self.POSTGRES_PASSWORD,
+            dbname=self.POSTGRES_DBNAME,
+        ).with_exposed_ports(self.POSTGRES_PORT_DEFAULT)
         testcontainers_config.ryuk_disabled = True
         self.sourcePgDb.start()
         print(f"Postgresql Started: {self.sourcePgDb.get_connection_url()}")
