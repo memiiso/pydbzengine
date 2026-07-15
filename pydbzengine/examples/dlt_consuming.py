@@ -14,7 +14,7 @@ from pydbzengine.helper import Utils
 # set global variables
 CURRENT_DIR = Path(__file__).parent
 DUCKDB_FILE = CURRENT_DIR.joinpath("dbz_cdc_events_example.duckdb")
-OFFSET_FILE = CURRENT_DIR.joinpath('postgresql-offsets.dat')
+OFFSET_FILE = CURRENT_DIR.joinpath("postgresql-offsets.dat")
 
 
 def wait_for_postgresql_to_start(self) -> None:
@@ -29,14 +29,13 @@ class DbPostgresql:
     POSTGRES_IMAGE = "debezium/example-postgres:3.0.0.Final"
     POSTGRES_HOST = "localhost"
     POSTGRES_PORT_DEFAULT = 5432
-    CONTAINER: PostgresContainer = (PostgresContainer(image=POSTGRES_IMAGE,
-                                                      port=POSTGRES_PORT_DEFAULT,
-                                                      username=POSTGRES_USER,
-                                                      password=POSTGRES_PASSWORD,
-                                                      dbname=POSTGRES_DBNAME,
-                                                      )
-                                    .with_exposed_ports(POSTGRES_PORT_DEFAULT)
-                                    )
+    CONTAINER: PostgresContainer = PostgresContainer(
+        image=POSTGRES_IMAGE,
+        port=POSTGRES_PORT_DEFAULT,
+        username=POSTGRES_USER,
+        password=POSTGRES_PASSWORD,
+        dbname=POSTGRES_DBNAME,
+    ).with_exposed_ports(POSTGRES_PORT_DEFAULT)
     PostgresContainer._connect = wait_for_postgresql_to_start
 
     def clean_files(self):
@@ -65,13 +64,19 @@ def debezium_engine_props(sourcedb: DbPostgresql):
     props.setProperty("name", "engine")
     props.setProperty("snapshot.mode", "initial_only")
     props.setProperty("database.hostname", sourcedb.CONTAINER.get_container_host_ip())
-    props.setProperty("database.port",
-                      sourcedb.CONTAINER.get_exposed_port(sourcedb.POSTGRES_PORT_DEFAULT))
+    props.setProperty(
+        "database.port",
+        sourcedb.CONTAINER.get_exposed_port(sourcedb.POSTGRES_PORT_DEFAULT),
+    )
     props.setProperty("database.user", sourcedb.POSTGRES_USER)
     props.setProperty("database.password", sourcedb.POSTGRES_PASSWORD)
     props.setProperty("database.dbname", sourcedb.POSTGRES_DBNAME)
-    props.setProperty("connector.class", "io.debezium.connector.postgresql.PostgresConnector")
-    props.setProperty("offset.storage", "org.apache.kafka.connect.storage.FileOffsetBackingStore")
+    props.setProperty(
+        "connector.class", "io.debezium.connector.postgresql.PostgresConnector"
+    )
+    props.setProperty(
+        "offset.storage", "org.apache.kafka.connect.storage.FileOffsetBackingStore"
+    )
     props.setProperty("offset.storage.file.filename", OFFSET_FILE.as_posix())
     props.setProperty("max.batch.size", "5")
     props.setProperty("poll.interval.ms", "10000")
@@ -86,8 +91,12 @@ def debezium_engine_props(sourcedb: DbPostgresql):
     props.setProperty("replica.identity.autoset.values", "inventory.*:FULL")
     # // debezium unwrap message
     props.setProperty("transforms", "unwrap")
-    props.setProperty("transforms.unwrap.type", "io.debezium.transforms.ExtractNewRecordState")
-    props.setProperty("transforms.unwrap.add.fields", "op,table,source.ts_ms,sourcedb,ts_ms")
+    props.setProperty(
+        "transforms.unwrap.type", "io.debezium.transforms.ExtractNewRecordState"
+    )
+    props.setProperty(
+        "transforms.unwrap.add.fields", "op,table,source.ts_ms,sourcedb,ts_ms"
+    )
     props.setProperty("transforms.unwrap.delete.tombstone.handling.mode", "rewrite")
     # props.setProperty("debezium.transforms.unwrap.drop.tombstones", "true")
     return props
@@ -115,7 +124,7 @@ def main():
     dlt_pipeline = dlt.pipeline(
         pipeline_name="dbz_cdc_events_example",
         destination="duckdb",
-        dataset_name="dbz_data"
+        dataset_name="dbz_data",
     )
 
     # Instantiate change event handler (DltChangeHandler) that uses the dlt pipeline
@@ -142,9 +151,13 @@ def main():
     # Iterate through the tables and display the data from tables within the 'dbz_data' schema.
     for r in result:
         database, schema, table = r[:3]  # Extract database, schema, and table names.
-        if schema == "dbz_data":  # Only show data from the schema where Debezium loaded the data.
+        if (
+            schema == "dbz_data"
+        ):  # Only show data from the schema where Debezium loaded the data.
             print(f"Data in table {table}:")
-            con.sql(f"select * from {database}.{schema}.{table} limit 5").show()  # Display table data
+            con.sql(
+                f"select * from {database}.{schema}.{table} limit 5"
+            ).show()  # Display table data
 
 
 if __name__ == "__main__":

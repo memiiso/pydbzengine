@@ -4,34 +4,43 @@ import json
 import logging
 import uuid
 from abc import abstractmethod
-from typing import List, Dict
 
 import pyarrow as pa
 from pyarrow import json as pa_json
 from pyiceberg.catalog import Catalog
 from pyiceberg.exceptions import NoSuchTableError
-from pyiceberg.partitioning import PartitionSpec, PartitionField
+from pyiceberg.partitioning import PartitionField, PartitionSpec
 from pyiceberg.schema import Schema
 from pyiceberg.table import Table
 from pyiceberg.transforms import DayTransform
 from pyiceberg.types import (
-    StringType,
-    NestedField,
     LongType,
-    UUIDType,
+    NestedField,
+    StringType,
     TimestampType,
+    UUIDType,
 )
 
-from pydbzengine import ChangeEvent, BasePythonChangeHandler
+from pydbzengine import BasePythonChangeHandler, ChangeEvent
 
 
 class BaseIcebergChangeHandler(BasePythonChangeHandler):
     DEBEZIUM_TABLE_PARTITION_SPEC = PartitionSpec(
-        PartitionField(source_id=10, field_id=1000, name="_consumed_at_day", transform=DayTransform())
+        PartitionField(
+            source_id=10,
+            field_id=1000,
+            name="_consumed_at_day",
+            transform=DayTransform(),
+        )
     )
     LOGGER_NAME = "pydbzengine.iceberg.IcebergChangeHandler"
 
-    def __init__(self, catalog: "Catalog", destination_namespace: tuple, supports_variant: bool = False):
+    def __init__(
+        self,
+        catalog: "Catalog",
+        destination_namespace: tuple,
+        supports_variant: bool = False,
+    ):
         """
         Initializes the IcebergChangeHandler.
         """
@@ -39,9 +48,9 @@ class BaseIcebergChangeHandler(BasePythonChangeHandler):
         self.destination_namespace: tuple = destination_namespace
         self.catalog = catalog
         self.supports_variant = supports_variant
-        self.tables: Dict[str, Table] = {}
+        self.tables: dict[str, Table] = {}
 
-    def handleJsonBatch(self, records: List[ChangeEvent]):
+    def handleJsonBatch(self, records: list[ChangeEvent]):
         """
         Handles a batch of Debezium ChangeEvent records.
         This method is called by the Debezium connector when a batch of change events
@@ -52,7 +61,7 @@ class BaseIcebergChangeHandler(BasePythonChangeHandler):
             records: A list of Debezium ChangeEvent objects representing database changes.
         """
         self.log.info(f"Received {len(records)} records")
-        table_events: Dict[str, list] = {}
+        table_events: dict[str, list] = {}
         for record in records:
             destination = record.destination()
             if not destination:
@@ -67,7 +76,7 @@ class BaseIcebergChangeHandler(BasePythonChangeHandler):
         self.log.info(f"Consumed {len(records)} records")
 
     @abstractmethod
-    def _handle_table_changes(self, destination: str, records: List[ChangeEvent]):
+    def _handle_table_changes(self, destination: str, records: list[ChangeEvent]):
         raise NotImplementedError
 
     def get_table(self, destination: str) -> "Table":
@@ -83,8 +92,10 @@ class BaseIcebergChangeHandler(BasePythonChangeHandler):
 
     def destination_to_table_identifier(self, destination: str) -> tuple:
         # convert java string to python string
-        table_name = str(destination).replace('.', '_').replace(' ', '_').replace('-', '_')
-        return self.destination_namespace + (table_name,)
+        table_name = (
+            str(destination).replace(".", "_").replace(" ", "_").replace("-", "_")
+        )
+        return (*self.destination_namespace, table_name)
 
 
 class IcebergChangeHandler(BaseIcebergChangeHandler):
@@ -94,14 +105,16 @@ class IcebergChangeHandler(BaseIcebergChangeHandler):
     to the corresponding Iceberg tables.
     """
 
-    def _handle_table_changes(self, destination: str, records: List[ChangeEvent]):
+    def _handle_table_changes(self, destination: str, records: list[ChangeEvent]):
         """
         Handles changes for a specific table.
         Args:
             destination: The name of the table to apply the changes to.
             records: A list of ChangeEvent objects for the specified table.
         """
-        records = [r for r in records if r.value() is not None and str(r.value()).strip()]
+        records = [
+            r for r in records if r.value() is not None and str(r.value()).strip()
+        ]
         if not records:
             return
 
@@ -110,15 +123,23 @@ class IcebergChangeHandler(BaseIcebergChangeHandler):
         arrow_data = []
         for record in records:
             # Create a dictionary matching the schema
-            avro_record = self._transform_event_to_row_dict(record=record, consumed_at=consumed_at)
+            avro_record = self._transform_event_to_row_dict(
+                record=record, consumed_at=consumed_at
+            )
             arrow_data.append(avro_record)
 
         if arrow_data:
-            pa_table = pa.Table.from_pylist(mapping=arrow_data, schema=self._target_schema.as_arrow())
+            pa_table = pa.Table.from_pylist(
+                mapping=arrow_data, schema=self._target_schema.as_arrow()
+            )
             table.append(pa_table)
-            self.log.info(f"Appended {len(arrow_data)} records to table {'.'.join(table.name())}")
+            self.log.info(
+                f"Appended {len(arrow_data)} records to table {'.'.join(table.name())}"
+            )
 
-    def _transform_event_to_row_dict(self, record: ChangeEvent, consumed_at: datetime) -> dict:
+    def _transform_event_to_row_dict(
+        self, record: ChangeEvent, consumed_at: datetime
+    ) -> dict:
         # Parse the JSON payload
         payload = json.loads(str(record.value()))
 
@@ -131,7 +152,9 @@ class IcebergChangeHandler(BaseIcebergChangeHandler):
         before = payload.get("before")
         after = payload.get("after")
         dbz_event_key = str(record.key()) if record.key() is not None else None
-        dbz_event_key_hash = uuid.uuid5(uuid.NAMESPACE_DNS, dbz_event_key) if dbz_event_key else None
+        dbz_event_key_hash = (
+            uuid.uuid5(uuid.NAMESPACE_DNS, dbz_event_key) if dbz_event_key else None
+        )
 
         return {
             "op": op,
@@ -142,7 +165,9 @@ class IcebergChangeHandler(BaseIcebergChangeHandler):
             "before": json.dumps(before) if before is not None else None,
             "after": json.dumps(after) if after is not None else None,
             "_dbz_event_key": dbz_event_key,
-            "_dbz_event_key_hash": dbz_event_key_hash.bytes if dbz_event_key_hash is not None else None,
+            "_dbz_event_key_hash": dbz_event_key_hash.bytes
+            if dbz_event_key_hash is not None
+            else None,
             "_consumed_at": consumed_at,
         }
 
@@ -150,26 +175,51 @@ class IcebergChangeHandler(BaseIcebergChangeHandler):
         try:
             return super().load_table(table_identifier=table_identifier)
         except NoSuchTableError:
-            self.log.warning(f"Iceberg table {'.'.join(table_identifier)} not found, creating it.")
-            table = self.catalog.create_table(identifier=table_identifier,
-                                              schema=self._target_schema,
-                                              partition_spec=self.DEBEZIUM_TABLE_PARTITION_SPEC)
+            self.log.warning(
+                f"Iceberg table {'.'.join(table_identifier)} not found, creating it."
+            )
+            table = self.catalog.create_table(
+                identifier=table_identifier,
+                schema=self._target_schema,
+                partition_spec=self.DEBEZIUM_TABLE_PARTITION_SPEC,
+            )
             self.log.info(
-                f"Created iceberg table {'.'.join(table_identifier)} with daily partitioning on _consumed_at.")
+                f"Created iceberg table {'.'.join(table_identifier)} with daily partitioning on _consumed_at."
+            )
             return table
 
     @property
     def _target_schema(self) -> Schema:
         # @TODO according to self.supports_variant we can return different schemas!
         return Schema(
-            NestedField(field_id=1, name="op", field_type=StringType(), required=True,
-                        doc="The operation type: c, u, d, r"),
-            NestedField(field_id=2, name="ts_ms", field_type=LongType(), required=False,
-                        doc="Timestamp of the event in milliseconds"),
-            NestedField(field_id=3, name="ts_us", field_type=LongType(), required=False,
-                        doc="Timestamp of the event in microseconds"),
-            NestedField(field_id=4, name="ts_ns", field_type=LongType(), required=False,
-                        doc="Timestamp of the event in nanoseconds"),
+            NestedField(
+                field_id=1,
+                name="op",
+                field_type=StringType(),
+                required=True,
+                doc="The operation type: c, u, d, r",
+            ),
+            NestedField(
+                field_id=2,
+                name="ts_ms",
+                field_type=LongType(),
+                required=False,
+                doc="Timestamp of the event in milliseconds",
+            ),
+            NestedField(
+                field_id=3,
+                name="ts_us",
+                field_type=LongType(),
+                required=False,
+                doc="Timestamp of the event in microseconds",
+            ),
+            NestedField(
+                field_id=4,
+                name="ts_ns",
+                field_type=LongType(),
+                required=False,
+                doc="Timestamp of the event in nanoseconds",
+            ),
             NestedField(
                 field_id=5,
                 name="source",
@@ -222,41 +272,57 @@ class IcebergChangeHandlerV2(BaseIcebergChangeHandler):
     to the corresponding Iceberg tables.
     """
 
-    def __init__(self, catalog: "Catalog", destination_namespace: tuple, supports_variant: bool = False,
-                 event_flattening_enabled=False):
+    def __init__(
+        self,
+        catalog: "Catalog",
+        destination_namespace: tuple,
+        supports_variant: bool = False,
+        event_flattening_enabled=False,
+    ):
         super().__init__(catalog, destination_namespace, supports_variant)
         self.event_flattening_enabled = event_flattening_enabled
 
-    def _handle_table_changes(self, destination: str, records: List[ChangeEvent]):
+    def _handle_table_changes(self, destination: str, records: list[ChangeEvent]):
         """
         Handles changes for a specific table.
         Args:
             destination: The name of the table to apply the changes to.
             records: A list of ChangeEvent objects for the specified table.
         """
-        records = [r for r in records if r.value() is not None and str(r.value()).strip()]
+        records = [
+            r for r in records if r.value() is not None and str(r.value()).strip()
+        ]
         if not records:
             return
 
         table = self.get_table(destination)
         if table is None:
-            table_identifier: tuple = self.destination_to_table_identifier(destination=destination)
-            table = self._infer_and_create_table(records=records, table_identifier=table_identifier)
+            table_identifier: tuple = self.destination_to_table_identifier(
+                destination=destination
+            )
+            table = self._infer_and_create_table(
+                records=records, table_identifier=table_identifier
+            )
             self.tables[destination] = table
         #
         arrow_data = self._read_to_arrow_table(records=records, schema=table.schema())
 
         # Populate all metadata columns (_consumed_at, _dbz_event_key, etc.)
         enriched_arrow_data = self._enrich_arrow_table_with_metadata(
-            arrow_table=arrow_data,
-            records=records
+            arrow_table=arrow_data, records=records
         )
 
-        self._handle_schema_changes(table=table, arrow_schema=enriched_arrow_data.schema)
+        self._handle_schema_changes(
+            table=table, arrow_schema=enriched_arrow_data.schema
+        )
         table.append(enriched_arrow_data)
-        self.log.info(f"Appended {len(enriched_arrow_data)} records to table {'.'.join(table.name())}")
+        self.log.info(
+            f"Appended {len(enriched_arrow_data)} records to table {'.'.join(table.name())}"
+        )
 
-    def _enrich_arrow_table_with_metadata(self, arrow_table: pa.Table, records: List[ChangeEvent]) -> pa.Table:
+    def _enrich_arrow_table_with_metadata(
+        self, arrow_table: pa.Table, records: list[ChangeEvent]
+    ) -> pa.Table:
         num_records = len(arrow_table)
         dbz_event_keys = []
         dbz_event_key_hashes = []
@@ -270,7 +336,9 @@ class IcebergChangeHandlerV2(BaseIcebergChangeHandler):
 
         # Create PyArrow arrays for each metadata column
         now = datetime.datetime.now(datetime.timezone.utc)
-        consumed_at_array = pa.array([now] * num_records, type=pa.timestamp('us', tz='UTC'))
+        consumed_at_array = pa.array(
+            [now] * num_records, type=pa.timestamp("us", tz="UTC")
+        )
         dbz_event_key_array = pa.array(dbz_event_keys, type=pa.string())
         dbz_event_key_hash_array = pa.array(dbz_event_key_hashes, type=pa.string())
 
@@ -294,15 +362,16 @@ class IcebergChangeHandlerV2(BaseIcebergChangeHandler):
         for record in records:
             val = record.value()
             val_str = str(val) if val is not None else ""
-            json_lines_buffer.write((val_str + '\n').encode('utf-8'))
+            json_lines_buffer.write((val_str + "\n").encode("utf-8"))
         json_lines_buffer.seek(0)
 
         parse_options = None
         if schema:
             # If an Iceberg schema is provided, convert it to a PyArrow schema and use it for parsing.
-            parse_options = pa_json.ParseOptions(explicit_schema=schema.as_arrow(), unexpected_field_behavior="infer")
+            parse_options = pa_json.ParseOptions(
+                explicit_schema=schema.as_arrow(), unexpected_field_behavior="infer"
+            )
         return pa_json.read_json(json_lines_buffer, parse_options=parse_options)
-
 
     def load_table(self, table_identifier):
         try:
@@ -310,7 +379,9 @@ class IcebergChangeHandlerV2(BaseIcebergChangeHandler):
         except NoSuchTableError:
             return None
 
-    def _infer_and_create_table(self, records: List[ChangeEvent], table_identifier: tuple) -> Table:
+    def _infer_and_create_table(
+        self, records: list[ChangeEvent], table_identifier: tuple
+    ) -> Table:
         """
         Infers a schema from a batch of records, creates a new Iceberg table with that schema,
         and sets up daily partitioning on the _consumed_at field.
@@ -319,36 +390,44 @@ class IcebergChangeHandlerV2(BaseIcebergChangeHandler):
         sanitized_fields = self._sanitize_schema_fields(data_schema=arrow_table.schema)
 
         # Add metadata fields to the list of pyarrow fields
-        sanitized_fields.extend([
-            pa.field("_consumed_at", pa.timestamp('us', tz='UTC')),
-            pa.field("_dbz_event_key", pa.string()),
-            pa.field("_dbz_event_key_hash", pa.string())  # For UUIDType
-        ])
+        sanitized_fields.extend(
+            [
+                pa.field("_consumed_at", pa.timestamp("us", tz="UTC")),
+                pa.field("_dbz_event_key", pa.string()),
+                pa.field("_dbz_event_key_hash", pa.string()),  # For UUIDType
+            ]
+        )
 
         # Create a pyarrow schema first
         sanitized_arrow_schema = pa.schema(sanitized_fields)
 
         # Create the table
         table = self.catalog.create_table(
-            identifier=table_identifier,
-            schema=sanitized_arrow_schema
+            identifier=table_identifier, schema=sanitized_arrow_schema
         )
         # add partitioning
         with table.update_spec() as update_spec:
-            update_spec.add_field(source_column_name="_consumed_at", transform=DayTransform(),
-                                  partition_field_name="_consumed_at_day")
+            update_spec.add_field(
+                source_column_name="_consumed_at",
+                transform=DayTransform(),
+                partition_field_name="_consumed_at_day",
+            )
 
         if self.event_flattening_enabled and False:
             # @TODO fix future. https://github.com/apache/iceberg-python/issues/1728
-            identifier_fields = self._get_identifier_fields(sample_event=records[0],
-                                                            table_identifier=table_identifier
-                                                            )
+            identifier_fields = self._get_identifier_fields(
+                sample_event=records[0], table_identifier=table_identifier
+            )
             if identifier_fields:
-                with table.update_schema(allow_incompatible_changes=True) as update_schema:
+                with table.update_schema(
+                    allow_incompatible_changes=True
+                ) as update_schema:
                     for field in identifier_fields:
                         update_schema._set_column_requirement(path=field, required=True)
                     update_schema.set_identifier_fields(*identifier_fields)
-        self.log.info(f"Created iceberg table {'.'.join(table_identifier)} with daily partitioning on _consumed_at.")
+        self.log.info(
+            f"Created iceberg table {'.'.join(table_identifier)} with daily partitioning on _consumed_at."
+        )
         return table
 
     def _sanitize_schema_fields(self, data_schema: pa.Schema) -> list:
@@ -371,14 +450,20 @@ class IcebergChangeHandlerV2(BaseIcebergChangeHandler):
                 new_fields.append(field.with_type(pa.struct(sanitized_nested_schema)))
             elif pa.types.is_list(field_type):
                 value_type = field_type.value_type
-                sanitized_val_fields = self._sanitize_schema_fields(pa.schema([pa.field("item", value_type)]))
-                new_fields.append(field.with_type(pa.list_(sanitized_val_fields[0].type)))
+                sanitized_val_fields = self._sanitize_schema_fields(
+                    pa.schema([pa.field("item", value_type)])
+                )
+                new_fields.append(
+                    field.with_type(pa.list_(sanitized_val_fields[0].type))
+                )
             else:
                 # Not a null or struct, so we keep the field as is.
                 new_fields.append(field)
         return new_fields
 
-    def _get_identifier_fields(self, sample_event: ChangeEvent, table_identifier: tuple) -> list:
+    def _get_identifier_fields(
+        self, sample_event: ChangeEvent, table_identifier: tuple
+    ) -> list:
         """
         Parses the Debezium event key to extract primary key field names.
 
@@ -393,33 +478,43 @@ class IcebergChangeHandlerV2(BaseIcebergChangeHandler):
             A list of key field names, or an empty list if the key cannot be determined.
         """
         key_json_str = sample_event.key()
-        table_name_str = '.'.join(table_identifier)
+        table_name_str = ".".join(table_identifier)
 
         if not key_json_str:
-            self.log.warning(f"Cannot determine identifier fields for {table_name_str}: event key is empty.")
+            self.log.warning(
+                f"Cannot determine identifier fields for {table_name_str}: event key is empty."
+            )
             return []
 
         try:
             key_data = json.loads(key_json_str)
         except json.JSONDecodeError:
-            self.log.error(f"Failed to parse Debezium event key as JSON for table {table_name_str}: {key_json_str}")
+            self.log.error(
+                f"Failed to parse Debezium event key as JSON for table {table_name_str}: {key_json_str}"
+            )
             return []
 
         if not isinstance(key_data, dict):
             self.log.warning(
-                f"Event key for {table_name_str} is not a JSON object, cannot infer primary key. Key: {key_json_str}")
+                f"Event key for {table_name_str} is not a JSON object, cannot infer primary key. Key: {key_json_str}"
+            )
             return []
 
         key_field_names = list(key_data.keys())
         if not key_field_names:
-            self.log.warning(f"Event key for {table_name_str} is an empty JSON object, cannot infer primary key.")
+            self.log.warning(
+                f"Event key for {table_name_str} is an empty JSON object, cannot infer primary key."
+            )
             return []
 
-        self.log.info(f"Found potential primary key fields {key_field_names} for table {table_name_str}")
+        self.log.info(
+            f"Found potential primary key fields {key_field_names} for table {table_name_str}"
+        )
         return key_field_names
 
     def _get_arrow_field_names(self, schema: pa.Schema) -> set:
         names = set()
+
         def _traverse(field, prefix=""):
             name = f"{prefix}{field.name}"
             names.add(name)
@@ -427,6 +522,7 @@ class IcebergChangeHandlerV2(BaseIcebergChangeHandler):
                 struct_type = field.type
                 for i in range(struct_type.num_fields):
                     _traverse(struct_type[i], prefix=f"{name}.")
+
         for field in schema:
             _traverse(field)
         return names
@@ -437,4 +533,6 @@ class IcebergChangeHandlerV2(BaseIcebergChangeHandler):
         if not new_names.issubset(existing_names):
             with table.update_schema() as update:
                 update.union_by_name(new_schema=arrow_schema)
-            self.log.info(f"Schema for table {'.'.join(table.name())} has been updated.")
+            self.log.info(
+                f"Schema for table {'.'.join(table.name())} has been updated."
+            )

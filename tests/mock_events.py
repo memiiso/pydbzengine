@@ -6,7 +6,7 @@ class MockChangeEvent(ChangeEvent):
     A concrete implementation of ChangeEvent for testing.
     """
 
-    def __init__(self, key: str, value: str, destination: str, partition: int=1):
+    def __init__(self, key: str, value: str, destination: str, partition: int = 1):
         self._key = key
         self._value = value
         self._destination = destination

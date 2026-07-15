@@ -1,6 +1,9 @@
-from abc import ABC
+from abc import ABC, abstractmethod
 from functools import cached_property
-from typing import List, Dict, Union, Any
+from typing import TYPE_CHECKING, Any, Union
+
+if TYPE_CHECKING:
+    from pydbzengine._jvm import Properties
 
 
 class RecordCommitter(ABC):
@@ -9,10 +12,12 @@ class RecordCommitter(ABC):
     Mimics the io.debezium.engine.DebeziumEngine$RecordCommitter interface for Python.
     """
 
+    @abstractmethod
     def markProcessed(self, record):
         """Marks a single record as processed."""
         pass
 
+    @abstractmethod
     def markBatchFinished(self):
         """Marks the entire batch as finished."""
         pass
@@ -24,18 +29,22 @@ class ChangeEvent(ABC):
     Mimics the org.apache.kafka.connect.connector.ConnectRecord interface for Python.
     """
 
+    @abstractmethod
     def key(self) -> str:
         """Returns the record key."""
         pass
 
+    @abstractmethod
     def value(self) -> str:
         """Returns the record value (payload)."""
         pass
 
+    @abstractmethod
     def destination(self) -> str:
         """Returns the destination topic/table."""
         pass
 
+    @abstractmethod
     def partition(self) -> int:
         """Returns the partition the record belongs to."""
         pass
@@ -47,7 +56,8 @@ class BasePythonChangeHandler(ABC):
     Users must implement the `handleJsonBatch` method to process Debezium events.
     """
 
-    def handleJsonBatch(self, records: List[ChangeEvent]):
+    @abstractmethod
+    def handleJsonBatch(self, records: list[ChangeEvent]):
         """
         Handles a batch of change events.
 
@@ -72,7 +82,7 @@ class DebeziumJsonEngine:
 
     def __init__(
         self,
-        properties: Union[Dict[str, Any], "Properties"],
+        properties: Union[dict[str, Any], "Properties"],
         handler: BasePythonChangeHandler,
     ):
         """
@@ -103,7 +113,7 @@ class DebeziumJsonEngine:
     @cached_property
     def engine(self):
         # Configure and build the Debezium engine.
-        from pydbzengine._jvm import EngineFormat, DebeziumEngine, Properties
+        from pydbzengine._jvm import DebeziumEngine, EngineFormat, Properties
 
         # Convert Python dictionary to Java Properties if necessary
         java_props = Properties()

@@ -2,13 +2,16 @@ import os
 import unittest
 from pathlib import Path
 
+from iceberg_catalog import IcebergCatalogContainer
+from minio_container import MinioContainer
 from postgres_container import PostgresDbHelper
+
 from pydbzengine._jvm import Properties
 
 
 class BasePostgresqlTest(unittest.TestCase):
     CURRENT_DIR = Path(__file__).parent
-    OFFSET_FILE = CURRENT_DIR.joinpath('postgresql-offsets.dat')
+    OFFSET_FILE = CURRENT_DIR.joinpath("postgresql-offsets.dat")
 
     @classmethod
     def setUpClass(cls):
@@ -21,19 +24,31 @@ class BasePostgresqlTest(unittest.TestCase):
 
     def debezium_engine_props_dict(self, unwrap_messages=True) -> dict:
         current_dir = Path(__file__).parent
-        offset_file_path = current_dir.joinpath('postgresql-offsets.dat')
+        offset_file_path = current_dir.joinpath("postgresql-offsets.dat")
 
         conf: dict = {}
         conf.setdefault("name", "engine")
         conf.setdefault("snapshot.mode", "always")
-        conf.setdefault("database.hostname", self.postgres_db.source_pg_db.get_container_host_ip())
-        conf.setdefault("database.port",
-                        str(self.postgres_db.source_pg_db.get_exposed_port(self.postgres_db.POSTGRES_PORT_DEFAULT)))
+        conf.setdefault(
+            "database.hostname", self.postgres_db.source_pg_db.get_container_host_ip()
+        )
+        conf.setdefault(
+            "database.port",
+            str(
+                self.postgres_db.source_pg_db.get_exposed_port(
+                    self.postgres_db.POSTGRES_PORT_DEFAULT
+                )
+            ),
+        )
         conf.setdefault("database.user", self.postgres_db.POSTGRES_USER)
         conf.setdefault("database.password", self.postgres_db.POSTGRES_PASSWORD)
         conf.setdefault("database.dbname", self.postgres_db.POSTGRES_DBNAME)
-        conf.setdefault("connector.class", "io.debezium.connector.postgresql.PostgresConnector")
-        conf.setdefault("offset.storage", "org.apache.kafka.connect.storage.FileOffsetBackingStore")
+        conf.setdefault(
+            "connector.class", "io.debezium.connector.postgresql.PostgresConnector"
+        )
+        conf.setdefault(
+            "offset.storage", "org.apache.kafka.connect.storage.FileOffsetBackingStore"
+        )
         conf.setdefault("offset.storage.file.filename", offset_file_path.as_posix())
         conf.setdefault("poll.interval.ms", "10000")
         conf.setdefault("converter.schemas.enable", "false")
@@ -46,8 +61,12 @@ class BasePostgresqlTest(unittest.TestCase):
 
         if unwrap_messages:
             conf.setdefault("transforms", "unwrap")
-            conf.setdefault("transforms.unwrap.type", "io.debezium.transforms.ExtractNewRecordState")
-            conf.setdefault("transforms.unwrap.add.fields", "op,table,source.ts_ms,sourcedb,ts_ms")
+            conf.setdefault(
+                "transforms.unwrap.type", "io.debezium.transforms.ExtractNewRecordState"
+            )
+            conf.setdefault(
+                "transforms.unwrap.add.fields", "op,table,source.ts_ms,sourcedb,ts_ms"
+            )
             conf.setdefault("transforms.unwrap.delete.handling.mode", "rewrite")
 
         return conf
@@ -76,9 +95,6 @@ class BasePostgresqlTest(unittest.TestCase):
         self.postgres_db.execute_sql(sql=sql)
 
 
-from minio_container import MinioContainer
-from iceberg_catalog import IcebergCatalogContainer
-
 class BaseIcebergTest(BasePostgresqlTest):
     @classmethod
     def setUpClass(cls):
@@ -93,4 +109,3 @@ class BaseIcebergTest(BasePostgresqlTest):
         cls.rest_catalog.stop()
         cls.minio_container.stop()
         super().tearDownClass()
-

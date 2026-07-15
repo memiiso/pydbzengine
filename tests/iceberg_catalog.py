@@ -1,6 +1,11 @@
+from typing import TYPE_CHECKING
+
 from testcontainers.core.config import testcontainers_config
 from testcontainers.core.container import DockerContainer
 from testcontainers.core.waiting_utils import wait_for_logs
+
+if TYPE_CHECKING:
+    from pyiceberg.catalog import Catalog
 
 
 class IcebergCatalogContainer(DockerContainer):
@@ -31,14 +36,15 @@ class IcebergCatalogContainer(DockerContainer):
         port = self.get_exposed_port(self.REST_PORT)
         return f"http://{host}:{port}"
 
-    def get_catalog(self) -> 'Catalog':
+    def get_catalog(self) -> "Catalog":
         from pyiceberg.catalog import load_catalog
+
         catalog = load_catalog(
             "default",  # Catalog name
             **{
                 "type": "rest",
                 "uri": self.get_uri(),
-            }
+            },
         )
         return catalog
 

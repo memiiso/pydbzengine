@@ -1,10 +1,10 @@
-import threading
 import logging
+import threading
 import time
 from pathlib import Path
 
-class Utils:
 
+class Utils:
     @staticmethod
     def run_engine_async(engine, timeout_sec=22, blocking=True):
         """
@@ -25,6 +25,7 @@ class Utils:
         thread.start()
 
         if timeout_sec is not None and timeout_sec > 0:
+
             def _timeout_shutdown():
                 if thread.is_alive():
                     logger.info("Engine run timed out! Closing engine.")
@@ -69,11 +70,13 @@ class Utils:
                 # 1. Primary check: check Log4j2 log file
                 if log_file.exists():
                     try:
-                        with open(log_file, "r", encoding="utf-8", errors="ignore") as f:
+                        with open(log_file, encoding="utf-8", errors="ignore") as f:
                             f.seek(initial_seek)
                             content = f.read()
                             if "Snapshot completed" in content:
-                                logger.info("Snapshot completion detected in log file. Closing engine.")
+                                logger.info(
+                                    "Snapshot completion detected in log file. Closing engine."
+                                )
                                 engine.close()
                                 return
                     except Exception:
@@ -87,7 +90,9 @@ class Utils:
                             if hasattr(handler.stream, "getvalue"):
                                 stream_value = handler.stream.getvalue()
                                 if "Snapshot completed" in stream_value:
-                                    logger.info("Snapshot completion detected in stream handler. Closing engine.")
+                                    logger.info(
+                                        "Snapshot completion detected in stream handler. Closing engine."
+                                    )
                                     engine.close()
                                     return
                         except Exception:

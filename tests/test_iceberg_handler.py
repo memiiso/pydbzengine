@@ -1,20 +1,17 @@
 import unittest
 
+from base_postgresql import BaseIcebergTest
+from minio_container import MinioContainer
 from pyiceberg.catalog import load_catalog
 from pyiceberg.schema import Schema
 from pyiceberg.types import LongType, NestedField, StringType
 
-from base_postgresql import BaseIcebergTest
-from iceberg_catalog import IcebergCatalogContainer
 from pydbzengine import DebeziumJsonEngine
 from pydbzengine.handlers.iceberg import IcebergChangeHandler
 from pydbzengine.helper import Utils
-from minio_container import MinioContainer
 
 
 class TestIcebergChangeHandler(BaseIcebergTest):
-
-
     @unittest.skip
     def test_iceberg_catalog(self):
         conf = {
@@ -26,21 +23,26 @@ class TestIcebergChangeHandler(BaseIcebergTest):
             "s3.secret-access-key": MinioContainer.AWS_SECRET_ACCESS_KEY,
         }
         print(conf)
-        catalog = load_catalog(
-            name="rest",
-            **conf
-        )
-        catalog.create_namespace('my_warehouse')
+        catalog = load_catalog(name="rest", **conf)
+        catalog.create_namespace("my_warehouse")
         debezium_event_schema = Schema(
             NestedField(field_id=1, name="id", field_type=LongType(), required=True),
-            NestedField(field_id=2, name="data", field_type=StringType(), required=False),
+            NestedField(
+                field_id=2, name="data", field_type=StringType(), required=False
+            ),
         )
-        table = catalog.create_table(identifier=("my_warehouse", "test_table",), schema=debezium_event_schema)
+        table = catalog.create_table(
+            identifier=(
+                "my_warehouse",
+                "test_table",
+            ),
+            schema=debezium_event_schema,
+        )
         print(f"Created iceberg table {table.refs()}")
 
     def test_iceberg_handler(self):
-        dest_ns1_database="my_warehouse"
-        dest_ns2_schema="dbz_cdc_data"
+        dest_ns1_database = "my_warehouse"
+        dest_ns2_schema = "dbz_cdc_data"
         conf = {
             "uri": self.rest_catalog.get_uri(),
             # "s3.path-style.access": "true",
@@ -49,32 +51,60 @@ class TestIcebergChangeHandler(BaseIcebergTest):
             "s3.access-key-id": MinioContainer.AWS_ACCESS_KEY_ID,
             "s3.secret-access-key": MinioContainer.AWS_SECRET_ACCESS_KEY,
         }
-        catalog = load_catalog(name="rest",**conf)
-        catalog.create_namespace(namespace=(dest_ns1_database, dest_ns2_schema,))
+        catalog = load_catalog(name="rest", **conf)
+        catalog.create_namespace(
+            namespace=(
+                dest_ns1_database,
+                dest_ns2_schema,
+            )
+        )
 
-        handler = IcebergChangeHandler(catalog=catalog, destination_namespace=(dest_ns1_database, dest_ns2_schema,))
+        handler = IcebergChangeHandler(
+            catalog=catalog,
+            destination_namespace=(
+                dest_ns1_database,
+                dest_ns2_schema,
+            ),
+        )
 
         dbz_props = self.debezium_engine_props(unwrap_messages=False)
         engine = DebeziumJsonEngine(properties=dbz_props, handler=handler)
 
-        with self.assertLogs(IcebergChangeHandler.LOGGER_NAME, level='INFO') as cm:
+        with self.assertLogs(IcebergChangeHandler.LOGGER_NAME, level="INFO") as cm:
             # run async then interrupt after timeout time to test the result!
             Utils.run_engine_async(engine=engine, timeout_sec=44)
 
         for t in cm.output:
             print(t)
-        self.assertRegex(text=str(cm.output), expected_regex='.*Created iceberg table.*')
-        self.assertRegex(text=str(cm.output), expected_regex='.*Appended.*records to table.*')
+        self.assertRegex(
+            text=str(cm.output), expected_regex=".*Created iceberg table.*"
+        )
+        self.assertRegex(
+            text=str(cm.output), expected_regex=".*Appended.*records to table.*"
+        )
 
         # catalog.create_namespace(dest_ns1_database)
         namespaces = catalog.list_namespaces()
-        self.assertIn((dest_ns1_database,) , namespaces, msg="Namespace not found in catalog")
+        self.assertIn(
+            (dest_ns1_database,), namespaces, msg="Namespace not found in catalog"
+        )
 
-        tables = catalog.list_tables((dest_ns1_database, dest_ns2_schema,))
+        tables = catalog.list_tables(
+            (
+                dest_ns1_database,
+                dest_ns2_schema,
+            )
+        )
         print(tables)
-        self.assertIn(('my_warehouse', 'dbz_cdc_data', 'testc_inventory_customers'), tables, msg="Namespace not found in catalog")
+        self.assertIn(
+            ("my_warehouse", "dbz_cdc_data", "testc_inventory_customers"),
+            tables,
+            msg="Namespace not found in catalog",
+        )
 
-        tbl = catalog.load_table(identifier=('my_warehouse', 'dbz_cdc_data', 'testc_inventory_customers'))
+        tbl = catalog.load_table(
+            identifier=("my_warehouse", "dbz_cdc_data", "testc_inventory_customers")
+        )
         data = tbl.scan().to_arrow()
         self.assertIn("sally.thomas@acme.com", str(data))
         self.assertIn("annek@noanswer.org", str(data))
