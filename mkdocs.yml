@@ -27,10 +27,13 @@ theme:
     - navigation.top
     - navigation.instant
     - navigation.tracking
+    - navigation.path
     - search.suggest
     - search.highlight
     - toc.integrate
+    - toc.follow
     - content.code.copy
+    - content.code.annotate
     - content.tabs.link
 
 nav:
@@ -60,3 +63,18 @@ markdown_extensions:
   - abbr
   - toc:
       permalink: true
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.tasklist:
+      custom_checkbox: true
+  - pymdownx.keys
+  - pymdownx.magiclink
+  - pymdownx.mark
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/memiiso/pydbzengine
+    - icon: fontawesome/brands/python
+      link: https://pypi.org/project/pydbzengine
+
