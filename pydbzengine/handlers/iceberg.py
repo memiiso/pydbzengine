@@ -128,7 +128,7 @@ class IcebergChangeHandler(BaseIcebergChangeHandler):
         source = payload.get("source")
         before = payload.get("before")
         after = payload.get("after")
-        dbz_event_key = str(record.key())  # convert java string to python string
+        dbz_event_key = str(record.key()) if record.key() is not None else None
         dbz_event_key_hash = uuid.uuid5(uuid.NAMESPACE_DNS, dbz_event_key) if dbz_event_key else None
 
         return {
@@ -140,7 +140,7 @@ class IcebergChangeHandler(BaseIcebergChangeHandler):
             "before": json.dumps(before) if before is not None else None,
             "after": json.dumps(after) if after is not None else None,
             "_dbz_event_key": dbz_event_key,
-            "_dbz_event_key_hash": dbz_event_key_hash.bytes,
+            "_dbz_event_key_hash": dbz_event_key_hash.bytes if dbz_event_key_hash is not None else None,
             "_consumed_at": consumed_at,
         }
 
