@@ -40,6 +40,8 @@ jobs:
           pip install coverage pylint pytest setuptools
           python3 -m compileall -f pydbzengine
           pip install .[dev,dlt,iceberg]
+          ruff check .
+          ruff format --check .
           python3 -m coverage run --source=pydbzengine -m pytest tests/
           python3 -m coverage report -m
 

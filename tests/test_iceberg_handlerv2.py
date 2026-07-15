@@ -4,13 +4,12 @@ import time
 import pandas as pd
 import pyarrow as pa
 import pyarrow.json as pj
+from base_postgresql import BaseIcebergTest
+from minio_container import MinioContainer
+from mock_events import MockChangeEvent
 from pyiceberg.catalog import load_catalog
 
-from base_postgresql import BaseIcebergTest
-from iceberg_catalog import IcebergCatalogContainer
-from mock_events import MockChangeEvent
 from pydbzengine.handlers.iceberg import IcebergChangeHandlerV2
-from minio_container import MinioContainer
 
 
 class TestIcebergChangeHandlerV2(BaseIcebergTest):
@@ -22,8 +21,6 @@ class TestIcebergChangeHandlerV2(BaseIcebergTest):
         pd.set_option("display.max_columns", None)  # Show all columns
         pd.set_option("display.width", None)  # Auto-detect terminal width
         pd.set_option("display.max_colwidth", None)  # Do not truncate cell contents
-
-
 
     def test_read_json_lines_example(self):
         json_data = """
@@ -135,14 +132,16 @@ class TestIcebergChangeHandlerV2(BaseIcebergTest):
         self.pprint_table(data=data)
 
         self._wait_for_condition(
-            predicate=lambda: "Charlie"
-            in str(self.red_table(testing_catalog, test_tbl_ref)),
-            failure_message=f"Expected row not consumed!",
+            predicate=lambda: (
+                "Charlie" in str(self.red_table(testing_catalog, test_tbl_ref))
+            ),
+            failure_message="Expected row not consumed!",
         )
         self._wait_for_condition(
-            predicate=lambda: self.red_table(testing_catalog, test_tbl_ref).num_rows
-            >= 3,
-            failure_message=f"Rows not consumed",
+            predicate=lambda: (
+                self.red_table(testing_catalog, test_tbl_ref).num_rows >= 3
+            ),
+            failure_message="Rows not consumed",
         )
         # # =================================================================
         # ## ==== PART 2 Add additional field ========================
@@ -238,7 +237,7 @@ class TestIcebergChangeHandlerV2(BaseIcebergTest):
         ]
         handler.handleJsonBatch(records)
 
-        table_id = namespace + ("test_schema_inference",)
+        table_id = (*namespace, "test_schema_inference")
         table = catalog.load_table(table_id)
         schema = table.schema()
 
@@ -268,7 +267,7 @@ class TestIcebergChangeHandlerV2(BaseIcebergTest):
         ]
         handler.handleJsonBatch(records)
 
-        table_id = namespace + ("test_schema_evolution",)
+        table_id = (*namespace, "test_schema_evolution")
         initial_fields = [f.name for f in catalog.load_table(table_id).schema().fields]
         self.assertIn("name", initial_fields)
         self.assertNotIn("email", initial_fields)
@@ -300,7 +299,7 @@ class TestIcebergChangeHandlerV2(BaseIcebergTest):
         ]
         handler.handleJsonBatch(records)
 
-        table_id = namespace + ("test_null_handling",)
+        table_id = (*namespace, "test_null_handling")
         table = catalog.load_table(table_id)
         schema = table.schema()
 
@@ -322,7 +321,7 @@ class TestIcebergChangeHandlerV2(BaseIcebergTest):
         ]
         handler.handleJsonBatch(records)
 
-        table_id = namespace + ("test_metadata_check",)
+        table_id = (*namespace, "test_metadata_check")
         data = catalog.load_table(table_id).scan().to_arrow()
 
         # Verify metadata columns are populated
@@ -345,7 +344,7 @@ class TestIcebergChangeHandlerV2(BaseIcebergTest):
         ]
         handler.handleJsonBatch(records)
 
-        table_id = namespace + ("test_nested_struct",)
+        table_id = (*namespace, "test_nested_struct")
         table = catalog.load_table(table_id)
         schema = table.schema()
 
@@ -369,7 +368,7 @@ class TestIcebergChangeHandlerV2(BaseIcebergTest):
         ]
         handler.handleJsonBatch(records)
 
-        table_id = namespace + ("test_empty_key",)
+        table_id = (*namespace, "test_empty_key")
         data = catalog.load_table(table_id).scan().to_arrow()
 
         self.assertEqual(data.num_rows, 1)
@@ -398,8 +397,8 @@ class TestIcebergChangeHandlerV2(BaseIcebergTest):
         ]
         handler.handleJsonBatch(records)
 
-        table_a_id = namespace + ("test_table_a",)
-        table_b_id = namespace + ("test_table_b",)
+        table_a_id = (*namespace, "test_table_a")
+        table_b_id = (*namespace, "test_table_b")
 
         data_a = catalog.load_table(table_a_id).scan().to_arrow()
         data_b = catalog.load_table(table_b_id).scan().to_arrow()
@@ -422,7 +421,7 @@ class TestIcebergChangeHandlerV2(BaseIcebergTest):
         ]
         handler.handleJsonBatch(records)
 
-        table_id = namespace + ("test_nested_evolution",)
+        table_id = (*namespace, "test_nested_evolution")
         initial_schema = catalog.load_table(table_id).schema()
         owner_field = initial_schema.find_field("owner")
         owner_struct = owner_field.field_type

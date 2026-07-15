@@ -1,14 +1,13 @@
 import json
 import logging
-from typing import List, Dict
 
 import dlt
 
-from pydbzengine import ChangeEvent, BasePythonChangeHandler
+from pydbzengine import BasePythonChangeHandler, ChangeEvent
 
 
 @dlt.source
-def debezium_source_events(records: List[ChangeEvent]):
+def debezium_source_events(records: list[ChangeEvent]):
     """
     A DLT source that processes Debezium change events.
 
@@ -23,7 +22,7 @@ def debezium_source_events(records: List[ChangeEvent]):
         dlt.Resource: A DLT resource for each table, containing the corresponding change events.
     """
     # group the events per table
-    table_events: Dict[str, List[str]] = {}
+    table_events: dict[str, list[str]] = {}
     for e in records:
         if e.value() is None or not str(e.value()).strip():
             continue
@@ -45,6 +44,7 @@ class DltChangeHandler(BasePythonChangeHandler):
     This class receives batches of Debezium ChangeEvent objects and uses a dlt pipeline
     to load the data into a destination (e.g., a data warehouse).
     """
+
     LOGGER_NAME = "debeziumdlt.DltChangeHandler"
 
     def __init__(self, dlt_pipeline):
@@ -57,7 +57,7 @@ class DltChangeHandler(BasePythonChangeHandler):
         self.dlt_pipeline = dlt_pipeline
         self.log = logging.getLogger(self.LOGGER_NAME)
 
-    def handleJsonBatch(self, records: List[ChangeEvent]):
+    def handleJsonBatch(self, records: list[ChangeEvent]):
         """
         Handles a batch of Debezium ChangeEvent records.
 

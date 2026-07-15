@@ -1,9 +1,12 @@
-import sys
-import os
-import traceback
 import logging
+import os
+import sys
 from pathlib import Path
-from typing import List
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from pydbzengine import BasePythonChangeHandler, ChangeEvent, RecordCommitter
+
 import jpype
 
 logger = logging.getLogger("pydbzengine._jvm")
@@ -45,7 +48,7 @@ if not jpype.isJVMStarted():
         potential_paths = [
             Path(jvm_path) / "lib" / "server" / "libjvm.dylib",
             Path(jvm_path) / "lib" / "libjvm.dylib",
-            ]
+        ]
         for p in potential_paths:
             if p.exists():
                 jvm_path = str(p)
@@ -79,6 +82,7 @@ except Exception as e:
         ) from e
     raise
 
+
 ################# STEP 4 CREATE JAVA CLASSES #################
 class EngineFormat:
     """
@@ -96,11 +100,13 @@ class PythonChangeConsumer:
     """
 
     def __init__(self):
-        self.handler: "BasePythonChangeHandler" = None  # The Python handler instance.
-        self._exception = None  # Store any Python exception raised during callback execution.
+        self.handler: BasePythonChangeHandler = None  # The Python handler instance.
+        self._exception = (
+            None  # Store any Python exception raised during callback execution.
+        )
 
     @jpype.JOverride
-    def handleBatch(self, records: List["ChangeEvent"], committer: "RecordCommitter"):
+    def handleBatch(self, records: list["ChangeEvent"], committer: "RecordCommitter"):
         """
         Handles a batch of change events received from the Debezium engine.
 
@@ -118,7 +124,9 @@ class PythonChangeConsumer:
             committer.markBatchFinished()  # Mark the batch as finished.
         except Exception as e:
             logger.error("Failed to consume events in python", exc_info=True)
-            self._exception = e  # Capture the exception to re-raise it on caller thread.
+            self._exception = (
+                e  # Capture the exception to re-raise it on caller thread.
+            )
             JavaLangThread.currentThread().interrupt()  # Interrupt the Debezium engine on error.
 
     @jpype.JOverride

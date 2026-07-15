@@ -11,12 +11,16 @@ class MinioContainer:
     S3_WAREHOUSE_BUCKET = "icebergdata"
 
     def __init__(self, image="minio/minio:RELEASE.2025-04-08T15-41-24Z"):
-        self.minio = MinioDockerContainer(
-            image=image,
-            access_key=self.AWS_ACCESS_KEY_ID,
-            secret_key=self.AWS_SECRET_ACCESS_KEY,
-            port=9000
-        ).with_exposed_ports(9000).with_exposed_ports(9001)
+        self.minio = (
+            MinioDockerContainer(
+                image=image,
+                access_key=self.AWS_ACCESS_KEY_ID,
+                secret_key=self.AWS_SECRET_ACCESS_KEY,
+                port=9000,
+            )
+            .with_exposed_ports(9000)
+            .with_exposed_ports(9001)
+        )
         self._client = None
 
     def start(self):
@@ -51,13 +55,12 @@ class MinioContainer:
                     "Effect": "Allow",
                     "Principal": "*",
                     "Action": ["s3:GetObject"],
-                    "Resource": [f"arn:aws:s3:::{bucket_name}/*"]
+                    "Resource": [f"arn:aws:s3:::{bucket_name}/*"],
                 }
-            ]
+            ],
         }
         self.client.set_bucket_policy(
-            bucket_name=bucket_name,
-            policy=json.dumps(policy)
+            bucket_name=bucket_name, policy=json.dumps(policy)
         )
         print(f"Bucket '{bucket_name}' created successfully.")
 

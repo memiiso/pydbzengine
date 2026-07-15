@@ -2,8 +2,8 @@ import os
 
 import dlt
 import duckdb
-
 from base_postgresql import BasePostgresqlTest
+
 from pydbzengine import DebeziumJsonEngine
 from pydbzengine.handlers.dlt import DltChangeHandler
 from pydbzengine.helper import Utils
@@ -26,17 +26,17 @@ class TestDebeziumJsonEngine(BasePostgresqlTest):
         dlt_pipeline = dlt.pipeline(
             pipeline_name="dbz_cdc_events",
             destination="duckdb",
-            dataset_name="dbz_data"
+            dataset_name="dbz_data",
         )
         # create handler class, which will process generated debezium events wih dlt
         handler = DltChangeHandler(dlt_pipeline=dlt_pipeline)
-        with self.assertLogs(DltChangeHandler.LOGGER_NAME, level='INFO') as cm:
+        with self.assertLogs(DltChangeHandler.LOGGER_NAME, level="INFO") as cm:
             # give the config and the handler class to the DebeziumJsonEngine
             engine = DebeziumJsonEngine(properties=props, handler=handler)
             # run async then interrupt after timeout time to test the result!
             Utils.run_engine_async(engine=engine, timeout_sec=120)
 
-        self.assertRegex(text=str(cm.output), expected_regex='.*Consumed.*records.*')
+        self.assertRegex(text=str(cm.output), expected_regex=".*Consumed.*records.*")
         # print the data ===========================
         con = duckdb.connect(self.DUCK_DB.as_posix())
         result = con.sql("SHOW ALL TABLES").fetchall()

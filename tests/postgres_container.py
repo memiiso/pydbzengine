@@ -27,7 +27,7 @@ class PostgresDbHelper:
     def stop(self):
         try:
             self.source_pg_db.stop()
-        except:
+        except Exception:
             pass
 
     def get_connection(self) -> Connection:
