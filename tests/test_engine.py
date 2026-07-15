@@ -6,6 +6,10 @@ from pydbzengine._jvm import Properties
 
 class TestDebeziumJsonEngine(unittest.TestCase):
     def test_wrong_config_raises_error(self):
+        class DummyHandler(BasePythonChangeHandler):
+            def handleJsonBatch(self, records):
+                pass
+
         props = Properties()
         props.setProperty("name", "my-connector")
         props.setProperty(
@@ -19,18 +23,14 @@ class TestDebeziumJsonEngine(unittest.TestCase):
         with self.assertRaisesRegex(
             Exception, ".*Error.*while.*instantiating.*transformation.*router"
         ):  # Wrong message
-            engine = DebeziumJsonEngine(
-                properties=props, handler=BasePythonChangeHandler()
-            )
+            engine = DebeziumJsonEngine(properties=props, handler=DummyHandler())
             engine.run()
 
         # test engine arguments validated
         with self.assertRaisesRegex(
             Exception, ".*Please provide debezium config.*"
         ):  # Wrong message
-            engine = DebeziumJsonEngine(
-                properties=None, handler=BasePythonChangeHandler()
-            )
+            engine = DebeziumJsonEngine(properties=None, handler=DummyHandler())
             engine.run()
         with self.assertRaisesRegex(
             Exception, ".*Please provide handler.*"
