@@ -4,7 +4,7 @@ from pyiceberg.catalog import load_catalog
 from pyiceberg.schema import Schema
 from pyiceberg.types import LongType, NestedField, StringType
 
-from base_postgresql import BasePostgresqlTest
+from base_postgresql import BaseIcebergTest
 from catalog_rest import CatalogRestContainer
 from pydbzengine import DebeziumJsonEngine
 from pydbzengine.handlers.iceberg import IcebergChangeHandler
@@ -12,20 +12,8 @@ from pydbzengine.helper import Utils
 from s3_minio import S3Minio
 
 
-class TestIcebergChangeHandler(BasePostgresqlTest):
+class TestIcebergChangeHandler(BaseIcebergTest):
 
-    def setUp(self):
-        print("setUp")
-        super().setUp()
-        self.S3MiNIO = S3Minio()
-        self.RESTCATALOG = CatalogRestContainer()
-        self.S3MiNIO.start()
-        self.RESTCATALOG.start(s3_endpoint=self.S3MiNIO.endpoint())
-
-    def tearDown(self):
-        super().tearDown()
-        self.S3MiNIO.stop()
-        self.RESTCATALOG.stop()
 
     @unittest.skip
     def test_iceberg_catalog(self):

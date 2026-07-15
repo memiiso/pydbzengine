@@ -39,6 +39,7 @@ class BaseIcebergChangeHandler(BasePythonChangeHandler):
         self.destination_namespace: tuple = destination_namespace
         self.catalog = catalog
         self.supports_variant = supports_variant
+        self.tables: Dict[str, Table] = {}
 
     def handleJsonBatch(self, records: List[ChangeEvent]):
         """
@@ -68,9 +69,12 @@ class BaseIcebergChangeHandler(BasePythonChangeHandler):
         raise NotImplementedError
 
     def get_table(self, destination: str) -> "Table":
-        # TODO keep table object in map to avoid calling catalog
-        table_identifier: tuple = self.destination_to_table_identifier(destination)
-        return self.load_table(table_identifier=table_identifier)
+        if destination not in self.tables:
+            table_identifier: tuple = self.destination_to_table_identifier(destination)
+            table = self.load_table(table_identifier=table_identifier)
+            if table is not None:
+                self.tables[destination] = table
+        return self.tables.get(destination)
 
     def load_table(self, table_identifier):
         return self.catalog.load_table(identifier=table_identifier)
@@ -95,6 +99,10 @@ class IcebergChangeHandler(BaseIcebergChangeHandler):
             destination: The name of the table to apply the changes to.
             records: A list of ChangeEvent objects for the specified table.
         """
+        records = [r for r in records if r.value() is not None and str(r.value()).strip()]
+        if not records:
+            return
+
         table = self.get_table(destination)
         consumed_at = datetime.datetime.now(datetime.timezone.utc)
         arrow_data = []
@@ -224,11 +232,15 @@ class IcebergChangeHandlerV2(BaseIcebergChangeHandler):
             destination: The name of the table to apply the changes to.
             records: A list of ChangeEvent objects for the specified table.
         """
+        records = [r for r in records if r.value() is not None and str(r.value()).strip()]
+        if not records:
+            return
 
         table = self.get_table(destination)
         if table is None:
             table_identifier: tuple = self.destination_to_table_identifier(destination=destination)
             table = self._infer_and_create_table(records=records, table_identifier=table_identifier)
+            self.tables[destination] = table
         #
         arrow_data = self._read_to_arrow_table(records=records, schema=table.schema())
 
@@ -249,8 +261,9 @@ class IcebergChangeHandlerV2(BaseIcebergChangeHandler):
 
         for record in records:
             key = record.key()
-            dbz_event_keys.append(key)
-            key_hash = str(uuid.uuid5(uuid.NAMESPACE_DNS, key)) if key else None
+            key_str = str(key) if key is not None else None
+            dbz_event_keys.append(key_str)
+            key_hash = str(uuid.uuid5(uuid.NAMESPACE_DNS, key_str)) if key_str else None
             dbz_event_key_hashes.append(key_hash)
 
         # Create PyArrow arrays for each metadata column
@@ -282,7 +295,9 @@ class IcebergChangeHandlerV2(BaseIcebergChangeHandler):
     def _read_to_arrow_table(self, records, schema=None):
         json_lines_buffer = io.BytesIO()
         for record in records:
-            json_lines_buffer.write((record.value() + '\n').encode('utf-8'))
+            val = record.value()
+            val_str = str(val) if val is not None else ""
+            json_lines_buffer.write((val_str + '\n').encode('utf-8'))
         json_lines_buffer.seek(0)
 
         parse_options = None
@@ -291,9 +306,6 @@ class IcebergChangeHandlerV2(BaseIcebergChangeHandler):
             parse_options = pa_json.ParseOptions(explicit_schema=schema.as_arrow(), unexpected_field_behavior="infer")
         return pa_json.read_json(json_lines_buffer, parse_options=parse_options)
 
-    def get_table(self, destination: str) -> "Table":
-        table_identifier: tuple = self.destination_to_table_identifier(destination=destination)
-        return self.load_table(table_identifier=table_identifier)
 
     def load_table(self, table_identifier):
         try:
@@ -405,7 +417,23 @@ class IcebergChangeHandlerV2(BaseIcebergChangeHandler):
         self.log.info(f"Found potential primary key fields {key_field_names} for table {table_name_str}")
         return key_field_names
 
+    def _get_arrow_field_names(self, schema: pa.Schema) -> set:
+        names = set()
+        def _traverse(field, prefix=""):
+            name = f"{prefix}{field.name}"
+            names.add(name)
+            if pa.types.is_struct(field.type):
+                struct_type = field.type
+                for i in range(struct_type.num_fields):
+                    _traverse(struct_type[i], prefix=f"{name}.")
+        for field in schema:
+            _traverse(field)
+        return names
+
     def _handle_schema_changes(self, table: "Table", arrow_schema: "pa.Schema"):
-        with table.update_schema() as update:
-            update.union_by_name(new_schema=arrow_schema)
-        self.log.info(f"Schema for table {'.'.join(table.name())} has been updated.")
+        existing_names = set(table.schema().column_names)
+        new_names = self._get_arrow_field_names(arrow_schema)
+        if not new_names.issubset(existing_names):
+            with table.update_schema() as update:
+                update.union_by_name(new_schema=arrow_schema)
+            self.log.info(f"Schema for table {'.'.join(table.name())} has been updated.")

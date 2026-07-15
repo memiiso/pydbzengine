@@ -6,31 +6,24 @@ import pyarrow as pa
 import pyarrow.json as pj
 from pyiceberg.catalog import load_catalog
 
-from base_postgresql import BasePostgresqlTest
+from base_postgresql import BaseIcebergTest
 from catalog_rest import CatalogRestContainer
 from mock_events import MockChangeEvent
 from pydbzengine.handlers.iceberg import IcebergChangeHandlerV2
 from s3_minio import S3Minio
 
 
-class TestIcebergChangeHandlerV2(BasePostgresqlTest):
-    def setUp(self):
-        print("setUp")
-        super().setUp()
-        self.S3MiNIO = S3Minio()
-        self.RESTCATALOG = CatalogRestContainer()
-        self.S3MiNIO.start()
-        self.RESTCATALOG.start(s3_endpoint=self.S3MiNIO.endpoint())
+class TestIcebergChangeHandlerV2(BaseIcebergTest):
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
         # Set pandas options to display all rows and columns, and prevent truncation of cell content
         pd.set_option("display.max_rows", None)  # Show all rows
         pd.set_option("display.max_columns", None)  # Show all columns
         pd.set_option("display.width", None)  # Auto-detect terminal width
         pd.set_option("display.max_colwidth", None)  # Do not truncate cell contents
 
-    def tearDown(self):
-        super().tearDown()
-        self.S3MiNIO.stop()
-        self.RESTCATALOG.stop()
+
 
     def test_read_json_lines_example(self):
         json_data = """

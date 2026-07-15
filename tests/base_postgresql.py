@@ -10,6 +10,15 @@ class BasePostgresqlTest(unittest.TestCase):
     CURRENT_DIR = Path(__file__).parent
     OFFSET_FILE = CURRENT_DIR.joinpath('postgresql-offsets.dat')
 
+    @classmethod
+    def setUpClass(cls):
+        cls.SOURCEPGDB = DbPostgresql()
+        cls.SOURCEPGDB.start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.SOURCEPGDB.stop()
+
     def debezium_engine_props_dict(self, unwrap_messages=True) -> dict:
         current_dir = Path(__file__).parent
         offset_file_path = current_dir.joinpath('postgresql-offsets.dat')
@@ -52,16 +61,36 @@ class BasePostgresqlTest(unittest.TestCase):
 
     def clean_offset_file(self):
         if self.OFFSET_FILE.exists():
-            os.remove(self.OFFSET_FILE)
+            try:
+                os.remove(self.OFFSET_FILE)
+            except OSError:
+                pass
 
     def setUp(self):
         self.clean_offset_file()
-        self.SOURCEPGDB = DbPostgresql()
-        self.SOURCEPGDB.start()
 
     def tearDown(self):
-        self.SOURCEPGDB.stop()
         self.clean_offset_file()
 
     def execute_on_source_db(self, sql: str):
         self.SOURCEPGDB.execute_sql(sql=sql)
+
+
+from s3_minio import S3Minio
+from catalog_rest import CatalogRestContainer
+
+class BaseIcebergTest(BasePostgresqlTest):
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        cls.S3MiNIO = S3Minio()
+        cls.RESTCATALOG = CatalogRestContainer()
+        cls.S3MiNIO.start()
+        cls.RESTCATALOG.start(s3_endpoint=cls.S3MiNIO.endpoint())
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.RESTCATALOG.stop()
+        cls.S3MiNIO.stop()
+        super().tearDownClass()
+
