@@ -1,5 +1,7 @@
 import threading
 import logging
+import time
+from pathlib import Path
 
 class Utils:
 
@@ -47,11 +49,6 @@ class Utils:
         The engine runs in a background thread while this function
         periodically checks for the snapshot completion log message.
         """
-
-        import threading
-        import time
-        import logging
-        from pathlib import Path
 
         logger = logging.getLogger(__name__)
 

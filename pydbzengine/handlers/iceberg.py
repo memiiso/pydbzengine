@@ -56,8 +56,7 @@ class BaseIcebergChangeHandler(BasePythonChangeHandler):
         for record in records:
             destination = record.destination()
             if not destination:
-                self.log.warning("Skipping record with empty destination.")
-                continue
+                raise ValueError("Record contains an empty or missing destination.")
             if destination not in table_events:
                 table_events[destination] = []
             table_events[destination].append(record)

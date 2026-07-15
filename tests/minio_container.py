@@ -1,17 +1,17 @@
 import json
 
 from testcontainers.core.config import testcontainers_config
-from testcontainers.minio import MinioContainer
+from testcontainers.minio import MinioContainer as MinioDockerContainer
 
 
-class S3Minio:
+class MinioContainer:
     AWS_ACCESS_KEY_ID = "admin"
     AWS_SECRET_ACCESS_KEY = "password"
     AWS_REGION = "us-east-1"
     S3_WAREHOUSE_BUCKET = "icebergdata"
 
     def __init__(self, image="minio/minio:RELEASE.2025-04-08T15-41-24Z"):
-        self.minio = MinioContainer(
+        self.minio = MinioDockerContainer(
             image=image,
             access_key=self.AWS_ACCESS_KEY_ID,
             secret_key=self.AWS_SECRET_ACCESS_KEY,

@@ -1,9 +1,12 @@
 import sys
 import os
 import traceback
+import logging
 from pathlib import Path
 from typing import List
 import jpype
+
+logger = logging.getLogger("pydbzengine._jvm")
 
 ################# STEP 1  INIT GLOBAL VARIABLES ####################
 # Define paths to Debezium Java libraries and configuration directory.
@@ -24,7 +27,7 @@ CLASS_PATHS.append(DEBEZIUM_CONF_DIR)
 # Add current working directory's config folder to classpath if exists
 CONFIG_DIR = Path().cwd().joinpath("config")
 if CONFIG_DIR.is_dir() and CONFIG_DIR.exists():
-    print(f"Adding classpath: {CONFIG_DIR.as_posix()}")
+    logger.info(f"Adding classpath: {CONFIG_DIR.as_posix()}")
     CLASS_PATHS.append(CONFIG_DIR.as_posix())
 
 ################# STEP 2  INIT JPYPE, JVM ####################
@@ -57,19 +60,24 @@ if not jpype.isJVMStarted():
         jvm_opts = ["-Xms256m", "-Xmx2g", "-XX:+UseG1GC"]
 
     jpype.startJVM(jvm_path, *jvm_opts, classpath=CLASS_PATHS)
-    print("JVM started.")
+    logger.info("JVM started.")
 
 ################# STEP 3 JAVA REFLECTION CLASSES #################
 # Import Java classes using jpype's JClass for reflection.
-Properties = jpype.JClass("java.util.Properties")
-DebeziumEngine = jpype.JClass("io.debezium.engine.DebeziumEngine")
-DebeziumEngineBuilder = jpype.JClass("io.debezium.engine.DebeziumEngine$Builder")
-
-# Note: JPype handles method overloading correctly, no JavaMethod workaround needed
-
-StopEngineException = jpype.JClass("io.debezium.engine.StopEngineException")
-JavaLangSystem = jpype.JClass("java.lang.System")
-JavaLangThread = jpype.JClass("java.lang.Thread")
+try:
+    Properties = jpype.JClass("java.util.Properties")
+    DebeziumEngine = jpype.JClass("io.debezium.engine.DebeziumEngine")
+    DebeziumEngineBuilder = jpype.JClass("io.debezium.engine.DebeziumEngine$Builder")
+    StopEngineException = jpype.JClass("io.debezium.engine.StopEngineException")
+    JavaLangSystem = jpype.JClass("java.lang.System")
+    JavaLangThread = jpype.JClass("java.lang.Thread")
+except Exception as e:
+    if jpype.isJVMStarted():
+        raise RuntimeError(
+            "JVM is already started, but Debezium engine classes could not be loaded. "
+            "Please ensure that the JVM is initialized with the correct classpaths containing Debezium jar files."
+        ) from e
+    raise
 
 ################# STEP 4 CREATE JAVA CLASSES #################
 class EngineFormat:
@@ -109,9 +117,7 @@ class PythonChangeConsumer:
                 committer.markProcessed(e)  # Mark each record as processed.
             committer.markBatchFinished()  # Mark the batch as finished.
         except Exception as e:
-            print("ERROR: failed to consume events in python")
-            print(str(e))
-            print(traceback.format_exc())
+            logger.error("Failed to consume events in python", exc_info=True)
             self._exception = e  # Capture the exception to re-raise it on caller thread.
             JavaLangThread.currentThread().interrupt()  # Interrupt the Debezium engine on error.
 
@@ -135,9 +141,12 @@ class PythonChangeConsumer:
         """
         Interrupts the Debezium engine.
         """
-        print("Interrupt called in python consumer")
+        logger.info("Interrupt called in python consumer")
         JavaLangThread.currentThread().interrupt()  # Interrupt the current thread (Debezium engine thread).
 
+    def __enter__(self):
+        return self
+
     def __exit__(self, exc_type, exc_value, traceback):
-        print("Python Exit method called! calling interrupt to stop the engine")
+        logger.info("Python Exit method called! calling interrupt to stop the engine")
         self.interrupt()

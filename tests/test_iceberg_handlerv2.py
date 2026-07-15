@@ -7,10 +7,10 @@ import pyarrow.json as pj
 from pyiceberg.catalog import load_catalog
 
 from base_postgresql import BaseIcebergTest
-from catalog_rest import CatalogRestContainer
+from iceberg_catalog import IcebergCatalogContainer
 from mock_events import MockChangeEvent
 from pydbzengine.handlers.iceberg import IcebergChangeHandlerV2
-from s3_minio import S3Minio
+from minio_container import MinioContainer
 
 
 class TestIcebergChangeHandlerV2(BaseIcebergTest):
@@ -74,11 +74,11 @@ class TestIcebergChangeHandlerV2(BaseIcebergTest):
         dest_ns1_database = "my_warehouse"
         dest_ns2_schema = "dbz_cdc_data"
         catalog_conf = {
-            "uri": self.RESTCATALOG.get_uri(),
+            "uri": self.rest_catalog.get_uri(),
             "warehouse": "warehouse",
-            "s3.endpoint": self.S3MiNIO.endpoint(),
-            "s3.access-key-id": S3Minio.AWS_ACCESS_KEY_ID,
-            "s3.secret-access-key": S3Minio.AWS_SECRET_ACCESS_KEY,
+            "s3.endpoint": self.minio_container.endpoint(),
+            "s3.access-key-id": MinioContainer.AWS_ACCESS_KEY_ID,
+            "s3.secret-access-key": MinioContainer.AWS_SECRET_ACCESS_KEY,
         }
         destination_namespace = (
             dest_ns1_database,
@@ -205,11 +205,11 @@ class TestIcebergChangeHandlerV2(BaseIcebergTest):
             f"dbz_test_{namespace_suffix}" if namespace_suffix else "dbz_test"
         )
         catalog_conf = {
-            "uri": self.RESTCATALOG.get_uri(),
+            "uri": self.rest_catalog.get_uri(),
             "warehouse": "warehouse",
-            "s3.endpoint": self.S3MiNIO.endpoint(),
-            "s3.access-key-id": S3Minio.AWS_ACCESS_KEY_ID,
-            "s3.secret-access-key": S3Minio.AWS_SECRET_ACCESS_KEY,
+            "s3.endpoint": self.minio_container.endpoint(),
+            "s3.access-key-id": MinioContainer.AWS_ACCESS_KEY_ID,
+            "s3.secret-access-key": MinioContainer.AWS_SECRET_ACCESS_KEY,
         }
         destination_namespace = (
             dest_ns1_database,

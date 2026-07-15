@@ -2,7 +2,7 @@ import os
 import unittest
 from pathlib import Path
 
-from db_postgresql import DbPostgresql
+from postgres_container import PostgresDbHelper
 from pydbzengine._jvm import Properties
 
 
@@ -12,12 +12,12 @@ class BasePostgresqlTest(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.SOURCEPGDB = DbPostgresql()
-        cls.SOURCEPGDB.start()
+        cls.postgres_db = PostgresDbHelper()
+        cls.postgres_db.start()
 
     @classmethod
     def tearDownClass(cls):
-        cls.SOURCEPGDB.stop()
+        cls.postgres_db.stop()
 
     def debezium_engine_props_dict(self, unwrap_messages=True) -> dict:
         current_dir = Path(__file__).parent
@@ -26,12 +26,12 @@ class BasePostgresqlTest(unittest.TestCase):
         conf: dict = {}
         conf.setdefault("name", "engine")
         conf.setdefault("snapshot.mode", "always")
-        conf.setdefault("database.hostname", self.SOURCEPGDB.sourcePgDb.get_container_host_ip())
+        conf.setdefault("database.hostname", self.postgres_db.source_pg_db.get_container_host_ip())
         conf.setdefault("database.port",
-                        str(self.SOURCEPGDB.sourcePgDb.get_exposed_port(self.SOURCEPGDB.POSTGRES_PORT_DEFAULT)))
-        conf.setdefault("database.user", self.SOURCEPGDB.POSTGRES_USER)
-        conf.setdefault("database.password", self.SOURCEPGDB.POSTGRES_PASSWORD)
-        conf.setdefault("database.dbname", self.SOURCEPGDB.POSTGRES_DBNAME)
+                        str(self.postgres_db.source_pg_db.get_exposed_port(self.postgres_db.POSTGRES_PORT_DEFAULT)))
+        conf.setdefault("database.user", self.postgres_db.POSTGRES_USER)
+        conf.setdefault("database.password", self.postgres_db.POSTGRES_PASSWORD)
+        conf.setdefault("database.dbname", self.postgres_db.POSTGRES_DBNAME)
         conf.setdefault("connector.class", "io.debezium.connector.postgresql.PostgresConnector")
         conf.setdefault("offset.storage", "org.apache.kafka.connect.storage.FileOffsetBackingStore")
         conf.setdefault("offset.storage.file.filename", offset_file_path.as_posix())
@@ -73,24 +73,24 @@ class BasePostgresqlTest(unittest.TestCase):
         self.clean_offset_file()
 
     def execute_on_source_db(self, sql: str):
-        self.SOURCEPGDB.execute_sql(sql=sql)
+        self.postgres_db.execute_sql(sql=sql)
 
 
-from s3_minio import S3Minio
-from catalog_rest import CatalogRestContainer
+from minio_container import MinioContainer
+from iceberg_catalog import IcebergCatalogContainer
 
 class BaseIcebergTest(BasePostgresqlTest):
     @classmethod
     def setUpClass(cls):
         super().setUpClass()
-        cls.S3MiNIO = S3Minio()
-        cls.RESTCATALOG = CatalogRestContainer()
-        cls.S3MiNIO.start()
-        cls.RESTCATALOG.start(s3_endpoint=cls.S3MiNIO.endpoint())
+        cls.minio_container = MinioContainer()
+        cls.rest_catalog = IcebergCatalogContainer()
+        cls.minio_container.start()
+        cls.rest_catalog.start(s3_endpoint=cls.minio_container.endpoint())
 
     @classmethod
     def tearDownClass(cls):
-        cls.RESTCATALOG.stop()
-        cls.S3MiNIO.stop()
+        cls.rest_catalog.stop()
+        cls.minio_container.stop()
         super().tearDownClass()
 
