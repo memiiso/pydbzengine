@@ -13,7 +13,7 @@ where = ["."]
 
 [project]
 name = "pydbzengine"
-version = "3.4.1.0"
+dynamic = ["version"]
 authors = [
     { name = "Memiiso Organization" },
 ]
@@ -37,6 +37,9 @@ iceberg = [
 dlt = [
     "dlt>=1.5.0",
 ]
+airflow = [
+    "apache-airflow>=2.10.4",
+]
 dev = [
     "testcontainers[minio]>=4.13.3",
     "dlt[duckdb]>=1.5.0",
@@ -56,3 +59,6 @@ docs = [
 Homepage = "https://github.com/memiiso/pydbzengine"
 Documentation = "https://github.com/memiiso/pydbzengine"
 Repository = "https://github.com/memiiso/pydbzengine"
+
+[tool.setuptools_scm]
+

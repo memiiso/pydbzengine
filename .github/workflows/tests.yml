@@ -20,9 +20,15 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: [ "3.10", "3.11", "3.12" ]
+        python-version: [ "3.10", "3.11", "3.12", "3.13" ]
+        java-version: [ "17", "21" ]
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v6
+      - name: Set up Java ${{ matrix.java-version }}
+        uses: actions/setup-java@v5
+        with:
+          java-version: ${{ matrix.java-version }}
+          distribution: 'temurin'
       - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v6
         with:
@@ -34,6 +40,6 @@ jobs:
           pip install coverage pylint pytest setuptools
           python3 -m compileall -f pydbzengine
           pip install .[dev,dlt,iceberg]
-          python3 -m coverage report -m ./pydbzengine/*.py
-          python3 -m coverage run --source=./tests/ -m unittest discover -s tests/
-#          python3 -m pylint pydbzengine
+          python3 -m coverage run --source=pydbzengine -m pytest tests/
+          python3 -m coverage report -m
+
