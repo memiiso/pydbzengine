@@ -4,6 +4,7 @@ from pydbzengine import DebeziumJsonEngine
 from pydbzengine.handlers.dlt import DltChangeHandler
 from pydbzengine.handlers.iceberg import IcebergChangeHandler
 from pydbzengine.logger import LoggingMixin
+from pydbzengine.schema.readers import DebeziumSchemaReader
 
 
 class DummySampleClass(LoggingMixin):
@@ -43,6 +44,13 @@ class TestLoggingMixin(TestCase):
         expected = f"{DebeziumJsonEngine.__module__}.{DebeziumJsonEngine.__qualname__}"
         self.assertEqual(engine.logger.name, expected)
         self.assertEqual(engine.log.name, expected)
+
+    def test_schema_reader_logger(self) -> None:
+        reader = DebeziumSchemaReader()
+        self.assertEqual(
+            reader.logger.name,
+            "pydbzengine.schema.readers.DebeziumSchemaReader",
+        )
 
     def test_legacy_dlt_handler_logger_name_preserved(self) -> None:
         class MockPipeline:
