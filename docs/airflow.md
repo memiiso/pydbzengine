@@ -39,25 +39,26 @@ from airflow import DAG
 from pydbzengine import ChangeEvent, BasePythonChangeHandler, DebeziumJsonEngine
 from pydbzengine.airflow import DebeziumEngineOperator
 
+
 class MyPrintHandler(BasePythonChangeHandler):
     def handleJsonBatch(self, records: List[ChangeEvent]):
         for record in records:
             print(f"Captured event on table {record.destination()}: {record.value()}")
 
+
 default_args = {
-    'owner': 'airflow',
-    'start_date': datetime(2026, 1, 1),
-    'retries': 1,
-    'retry_delay': timedelta(minutes=5),
+    "owner": "airflow",
+    "start_date": datetime(2026, 1, 1),
+    "retries": 1,
+    "retry_delay": timedelta(minutes=5),
 }
 
 with DAG(
-    dag_id='debezium_cdc_dag',
+    dag_id="debezium_cdc_dag",
     default_args=default_args,
-    schedule_interval='@daily',
+    schedule_interval="@daily",
     catchup=False,
 ) as dag:
-
     # Define Debezium configurations
     dbz_properties = {
         "name": "airflow-cdc-engine",
@@ -72,7 +73,7 @@ with DAG(
         "offset.storage.file.filename": "/tmp/offsets.dat",
         "snapshot.mode": "initial_only",
         "schema.history.internal": "io.debezium.storage.file.history.FileSchemaHistory",
-        "schema.history.internal.file.filename": "/tmp/schema_history.dat"
+        "schema.history.internal.file.filename": "/tmp/schema_history.dat",
     }
 
     # Instantiate engine and handler
@@ -80,7 +81,7 @@ with DAG(
 
     # Create the task
     run_debezium_task = DebeziumEngineOperator(
-        task_id='run_debezium_cdc',
+        task_id="run_debezium_cdc",
         engine=engine,
     )
 ```

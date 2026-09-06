@@ -23,17 +23,19 @@ from typing import List
 from pydbzengine import ChangeEvent, BasePythonChangeHandler
 from pydbzengine import DebeziumJsonEngine
 
+
 class PrintChangeHandler(BasePythonChangeHandler):
     def handleJsonBatch(self, records: List[ChangeEvent]):
         for record in records:
             print(f"Record: {record.value()}")
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     props = {
         "name": "engine",
         # ... set your connector properties ...
     }
-    
+
     engine = DebeziumJsonEngine(properties=props, handler=PrintChangeHandler())
     engine.run()
 ```

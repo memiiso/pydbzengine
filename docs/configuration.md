@@ -41,10 +41,8 @@ dbz_properties = {
     "database.user": "postgres",
     "database.password": "postgres",
     "database.dbname": "postgres",
-    
     # Prefix appended to all published target names/tables
     "topic.prefix": "cdc_prod",
-    
     # Specific database / table filters
     "table.include.list": "inventory.customers,inventory.orders",
 }
@@ -61,19 +59,18 @@ By default, Debezium envelopes change events in a complex structure containing `
 Add these lines to your properties dictionary to unwrap database updates:
 
 ```python
-dbz_properties.update({
-    # Register the unwrap transform
-    "transforms": "unwrap",
-    
-    # Specify the unwrap class
-    "transforms.unwrap.type": "io.debezium.transforms.ExtractNewRecordState",
-    
-    # Optionally append metadata to the unwrapped event
-    "transforms.unwrap.add.fields": "op,table,source.ts_ms,sourcedb,ts_ms",
-    
-    # How to handle deleted rows (tombstones)
-    "transforms.unwrap.delete.tombstone.handling.mode": "rewrite",
-})
+dbz_properties.update(
+    {
+        # Register the unwrap transform
+        "transforms": "unwrap",
+        # Specify the unwrap class
+        "transforms.unwrap.type": "io.debezium.transforms.ExtractNewRecordState",
+        # Optionally append metadata to the unwrapped event
+        "transforms.unwrap.add.fields": "op,table,source.ts_ms,sourcedb,ts_ms",
+        # How to handle deleted rows (tombstones)
+        "transforms.unwrap.delete.tombstone.handling.mode": "rewrite",
+    }
+)
 ```
 
 *   **`delete.tombstone.handling.mode`**: Set to `"rewrite"` to ensure delete events are cleanly represented in your Python handlers instead of triggering empty tombstone exceptions.

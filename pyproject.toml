@@ -2,14 +2,19 @@
 requires = ["setuptools", "setuptools-scm"]
 build-backend = "setuptools.build_meta"
 
+# Packaging: ship only pydbzengine (exclude tests/docs), bundle runtime JARs & py.typed
 [tool.setuptools]
-include-package-data = true  # Important: Enables inclusion of non-code files
+include-package-data = true
 
 [tool.setuptools.packages.find]
-where = ["."]
+include = ["pydbzengine*"]
+exclude = ["tests*", "scripts*", "docs*", "site*", "pydbzengine.examples*"]
 
 [tool.setuptools.package-data]
-"pydbzengine" = ["debezium/libs/*.jar", "config/*"]
+"pydbzengine" = ["debezium/libs/*.jar", "config/*", "py.typed"]
+
+[tool.setuptools.exclude-package-data]
+"*" = ["*.md", "**/*.md"]
 
 [project]
 name = "pydbzengine"
@@ -29,7 +34,11 @@ classifiers = [
 dependencies = [
     "jpype1>=1.6.0",
 ]
+
 [project.optional-dependencies]
+arrow = [
+    "pyarrow",
+]
 iceberg = [
     "pyiceberg[pyiceberg-core]>=0.10.0",
     "pyarrow",
@@ -48,11 +57,14 @@ dev = [
     "pandas",
     "pytest",
     "sqlalchemy",
-    "ruff"
+    "ruff",
+    "mypy",
+    "coverage",
 ]
 docs = [
     "mkdocs-material",
 ]
+
 #[project.scripts]
 #debezium = "pydbzengine.__main__:main"
 
@@ -60,22 +72,18 @@ docs = [
 Homepage = "https://github.com/memiiso/pydbzengine"
 Documentation = "https://github.com/memiiso/pydbzengine"
 Repository = "https://github.com/memiiso/pydbzengine"
+Issues = "https://github.com/memiiso/pydbzengine/issues"
+Changelog = "https://github.com/memiiso/pydbzengine/releases"
 
 [tool.setuptools_scm]
+fallback_version = "0.1.0"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
 
 [tool.ruff]
 line-length = 88
-indent-width = 4
 target-version = "py310"
-exclude = [
-    ".git",
-    ".mypy_cache",
-    ".pytest_cache",
-    ".venv",
-    "__pycache__",
-    "build",
-    "dist",
-]
 
 [tool.ruff.lint]
 select = [
@@ -92,4 +100,13 @@ ignore = ["E501"]
 [tool.ruff.lint.per-file-ignores]
 "__init__.py" = ["F401"]
 
+[tool.mypy]
+python_version = "3.10"
+ignore_missing_imports = true
+warn_unused_configs = true
+check_untyped_defs = true
+
+[tool.coverage.run]
+source = ["pydbzengine"]
+omit = ["tests/*", "pydbzengine/examples/*"]
 
