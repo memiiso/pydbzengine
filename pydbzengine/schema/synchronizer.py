@@ -15,7 +15,6 @@ T_Batch = TypeVar("T_Batch")
 T_Record = TypeVar("T_Record", bound=SupportsChangePayload)
 
 
-
 class InStreamSynchronizer(
     BaseStreamSynchronizer[T_Table, T_Batch, T_Record],
     Generic[T_Table, T_Batch, T_Record],

@@ -12,8 +12,7 @@ from pydbzengine.schema.models import CanonicalSchema
 class SupportsChangePayload(Protocol):
     """Protocol for change events exposing a value() payload method."""
 
-    def value(self) -> Any:
-        ...
+    def value(self) -> Any: ...
 
 
 T_Schema = TypeVar("T_Schema")
