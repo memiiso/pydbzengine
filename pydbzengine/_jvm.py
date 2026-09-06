@@ -100,7 +100,9 @@ class PythonChangeConsumer:
     """
 
     def __init__(self):
-        self.handler: BasePythonChangeHandler | None = None  # The Python handler instance.
+        self.handler: BasePythonChangeHandler | None = (
+            None  # The Python handler instance.
+        )
         self._exception = (
             None  # Store any Python exception raised during callback execution.
         )

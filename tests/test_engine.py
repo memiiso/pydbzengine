@@ -27,14 +27,10 @@ class TestDebeziumJsonEngine(unittest.TestCase):
             engine.run()
 
         # Engine arguments validated fail-fast
-        with self.assertRaisesRegex(
-            ValueError, ".*Please provide debezium config.*"
-        ):
+        with self.assertRaisesRegex(ValueError, ".*Please provide debezium config.*"):
             DebeziumJsonEngine(properties=None, handler=DummyHandler())
 
-        with self.assertRaisesRegex(
-            ValueError, ".*Please provide handler.*"
-        ):
+        with self.assertRaisesRegex(ValueError, ".*Please provide handler.*"):
             DebeziumJsonEngine(properties=props, handler=None)  # type: ignore[arg-type]
 
     def test_handler_exception_propagation(self) -> None:
