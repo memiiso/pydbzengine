@@ -1,27 +1,30 @@
-import sys
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, Any
 
 try:
     from airflow.models import BaseOperator
-except ImportError:
-    print(
-        "Error: airflow is required for this functionality.", file=sys.stderr
-    )  # Print to stderr
-    print(
-        "Please install it using 'pip install apache-airflow' (or the appropriate command for your Airflow installation).",
-        file=sys.stderr,
-    )
-    raise
+except ImportError as e:
+    raise ImportError(
+        "apache-airflow is required to use DebeziumEngineOperator. "
+        "Please install it using 'pip install apache-airflow' or 'pip install pydbzengine[airflow]'."
+    ) from e
 
-from pydbzengine import DebeziumJsonEngine
+if TYPE_CHECKING:
+    from pydbzengine import DebeziumJsonEngine
 
 
 class DebeziumEngineOperator(BaseOperator):
-    def __init__(self, engine: DebeziumJsonEngine, **kwargs) -> None:
+    def __init__(
+        self,
+        engine: DebeziumJsonEngine,
+        **kwargs: Any,
+    ) -> None:
         super().__init__(**kwargs)
         self.engine = engine
         self.kill_called = False
 
-    def execute(self, context):
+    def execute(self, context: Any) -> None:
         self.log.info("Starting Debezium engine")
         self.engine.run()
 

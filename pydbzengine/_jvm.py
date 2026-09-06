@@ -100,7 +100,7 @@ class PythonChangeConsumer:
     """
 
     def __init__(self):
-        self.handler: BasePythonChangeHandler = None  # The Python handler instance.
+        self.handler: BasePythonChangeHandler | None = None  # The Python handler instance.
         self._exception = (
             None  # Store any Python exception raised during callback execution.
         )
@@ -118,6 +118,8 @@ class PythonChangeConsumer:
             committer: The RecordCommitter used to acknowledge processed records.
         """
         try:
+            if self.handler is None:
+                raise RuntimeError("PythonChangeConsumer handler is not set!")
             self.handler.handleJsonBatch(records=records)
             for e in records:
                 committer.markProcessed(e)  # Mark each record as processed.
@@ -135,6 +137,20 @@ class PythonChangeConsumer:
         Indicates whether the consumer supports tombstone events.
         """
         return True
+
+    @property
+    def error(self) -> Exception | None:
+        """Returns the last captured exception during event consumption, if any."""
+        return self._exception
+
+    def clear_error(self) -> None:
+        """Clears any previously captured exception."""
+        self._exception = None
+
+    def raise_if_failed(self) -> None:
+        """Raises any captured exception from event consumption."""
+        if self._exception is not None:
+            raise self._exception
 
     def set_change_handler(self, handler: "BasePythonChangeHandler"):
         """

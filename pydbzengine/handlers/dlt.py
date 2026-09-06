@@ -1,5 +1,4 @@
 import json
-import logging
 
 import dlt
 
@@ -55,7 +54,6 @@ class DltChangeHandler(BasePythonChangeHandler):
             dlt_pipeline: The dlt pipeline instance to use for loading data.
         """
         self.dlt_pipeline = dlt_pipeline
-        self.log = logging.getLogger(self.LOGGER_NAME)
 
     def handleJsonBatch(self, records: list[ChangeEvent]):
         """

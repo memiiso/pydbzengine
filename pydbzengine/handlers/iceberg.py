@@ -1,7 +1,6 @@
 import datetime
 import io
 import json
-import logging
 import uuid
 from abc import abstractmethod
 
@@ -44,7 +43,6 @@ class BaseIcebergChangeHandler(BasePythonChangeHandler):
         """
         Initializes the IcebergChangeHandler.
         """
-        self.log = logging.getLogger(self.LOGGER_NAME)
         self.destination_namespace: tuple = destination_namespace
         self.catalog = catalog
         self.supports_variant = supports_variant
@@ -138,7 +136,7 @@ class IcebergChangeHandler(BaseIcebergChangeHandler):
             )
 
     def _transform_event_to_row_dict(
-        self, record: ChangeEvent, consumed_at: datetime
+        self, record: ChangeEvent, consumed_at: datetime.datetime
     ) -> dict:
         # Parse the JSON payload
         payload = json.loads(str(record.value()))

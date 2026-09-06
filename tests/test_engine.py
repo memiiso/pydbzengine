@@ -1,13 +1,13 @@
 import unittest
 
-from pydbzengine import BasePythonChangeHandler, DebeziumJsonEngine
+from pydbzengine import BasePythonChangeHandler, DebeziumJsonEngine, RecordCommitter
 from pydbzengine._jvm import Properties
 
 
 class TestDebeziumJsonEngine(unittest.TestCase):
-    def test_wrong_config_raises_error(self):
+    def test_wrong_config_raises_error(self) -> None:
         class DummyHandler(BasePythonChangeHandler):
-            def handleJsonBatch(self, records):
+            def handleJsonBatch(self, records) -> None:
                 pass
 
         props = Properties()
@@ -22,25 +22,22 @@ class TestDebeziumJsonEngine(unittest.TestCase):
 
         with self.assertRaisesRegex(
             Exception, ".*Error.*while.*instantiating.*transformation.*router"
-        ):  # Wrong message
+        ):
             engine = DebeziumJsonEngine(properties=props, handler=DummyHandler())
             engine.run()
 
-        # test engine arguments validated
+        # Engine arguments validated fail-fast
         with self.assertRaisesRegex(
-            Exception, ".*Please provide debezium config.*"
-        ):  # Wrong message
-            engine = DebeziumJsonEngine(properties=None, handler=DummyHandler())
-            engine.run()
+            ValueError, ".*Please provide debezium config.*"
+        ):
+            DebeziumJsonEngine(properties=None, handler=DummyHandler())
+
         with self.assertRaisesRegex(
-            Exception, ".*Please provide handler.*"
-        ):  # Wrong message
-            engine = DebeziumJsonEngine(properties=props, handler=None)
-            engine.run()
+            ValueError, ".*Please provide handler.*"
+        ):
+            DebeziumJsonEngine(properties=props, handler=None)  # type: ignore[arg-type]
 
-    def test_handler_exception_propagation(self):
-        from unittest.mock import MagicMock
-
+    def test_handler_exception_propagation(self) -> None:
         props = Properties()
         props.setProperty("name", "my-connector")
         props.setProperty(
@@ -48,23 +45,28 @@ class TestDebeziumJsonEngine(unittest.TestCase):
         )
 
         class FailingHandler(BasePythonChangeHandler):
-            def handleJsonBatch(self, records):
+            def handleJsonBatch(self, records) -> None:
                 raise ValueError("Oops, simulation error!")
+
+        class DummyCommitter(RecordCommitter):
+            def markProcessed(self, record) -> None:
+                pass
+
+            def markBatchFinished(self) -> None:
+                pass
 
         handler = FailingHandler()
         engine = DebeziumJsonEngine(properties=props, handler=handler)
 
-        # Mock the Java engine's run to simulate Java invoking our consumer callback
-        mock_java_engine = MagicMock()
+        class DummyJavaEngine:
+            def run(self) -> None:
+                try:
+                    engine.consumer.handleBatch([], DummyCommitter())
+                except Exception:
+                    pass
 
-        def mock_java_run():
-            try:
-                engine.consumer.handleBatch([], MagicMock())
-            except Exception:
-                pass
-
-        mock_java_engine.run.side_effect = mock_java_run
-        engine.__dict__["engine"] = mock_java_engine
+        # Direct attribute assignment rather than __dict__ modification
+        engine._engine = DummyJavaEngine()
 
         try:
             with self.assertRaisesRegex(ValueError, "Oops, simulation error!"):

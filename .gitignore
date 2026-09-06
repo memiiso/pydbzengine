@@ -6,6 +6,7 @@ tests/logs
 pydbzengine/examples/logs
 **.duckdb
 **offsets.dat
+.agent/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
