@@ -46,6 +46,7 @@ JPype starting restriction means the JVM can **only be initialized once** per Py
 *   **Solution**: The initialization module in `pydbzengine._jvm` checks `jpype.isJVMStarted()` before startup. However, if you are writing custom JVM startup scripts, always wrap it:
     ```python
     import jpype
+
     if not jpype.isJVMStarted():
         jpype.startJVM(...)
     ```

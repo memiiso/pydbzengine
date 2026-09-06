@@ -10,6 +10,7 @@ You only need to implement the `handleJsonBatch` method. This method receives a 
 from typing import List
 from pydbzengine import ChangeEvent, BasePythonChangeHandler
 
+
 class MyCustomHandler(BasePythonChangeHandler):
     def handleJsonBatch(self, records: List[ChangeEvent]):
         print(f"Received batch of {len(records)} records")
@@ -18,7 +19,7 @@ class MyCustomHandler(BasePythonChangeHandler):
             dest = record.destination()
             key = record.key()
             value = record.value()
-            
+
             # Implement your logic here (e.g., push to Kafka, call API, etc.)
             print(f"Processing event for {dest}")
 ```

@@ -16,9 +16,7 @@ from pydbzengine.handlers.dlt import DltChangeHandler
 
 # Create a dlt pipeline
 dlt_pipeline = dlt.pipeline(
-    pipeline_name="dbz_cdc_events",
-    destination="duckdb",
-    dataset_name="dbz_data"
+    pipeline_name="dbz_cdc_events", destination="duckdb", dataset_name="dbz_data"
 )
 
 handler = DltChangeHandler(dlt_pipeline=dlt_pipeline)

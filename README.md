@@ -120,7 +120,7 @@ class PrintChangeHandler(BasePythonChangeHandler):
         print("--------------------------------------")
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     props = {
         "name": "engine",
         "snapshot.mode": "initial_only",
@@ -135,7 +135,6 @@ if __name__ == '__main__':
 
     # Start the Debezium engine to begin consuming and processing change events.
     engine.run()
-
 ```
 ### Consume events to Apache Iceberg
 
@@ -153,7 +152,13 @@ conf = {
     "s3.secret-access-key": "minioadmin",
 }
 catalog = load_catalog(name="rest", **conf)
-handler = IcebergChangeHandlerV2(catalog=catalog, destination_namespace=("iceberg", "debezium_cdc_data",))
+handler = IcebergChangeHandlerV2(
+    catalog=catalog,
+    destination_namespace=(
+        "iceberg",
+        "debezium_cdc_data",
+    ),
+)
 
 dbz_props = {
     "name": "engine",
@@ -180,7 +185,7 @@ import dlt
 dlt_pipeline = dlt.pipeline(
     pipeline_name="dbz_cdc_events_example",
     destination="duckdb",
-    dataset_name="dbz_data"
+    dataset_name="dbz_data",
 )
 
 handler = DltChangeHandler(dlt_pipeline=dlt_pipeline)

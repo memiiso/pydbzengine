@@ -26,8 +26,7 @@ conf = {
 }
 catalog = load_catalog(name="rest", **conf)
 handler = IcebergChangeHandlerV2(
-    catalog=catalog, 
-    destination_namespace=("iceberg", "debezium_cdc_data")
+    catalog=catalog, destination_namespace=("iceberg", "debezium_cdc_data")
 )
 ```
 
