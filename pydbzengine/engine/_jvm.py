@@ -12,12 +12,10 @@ logger = logging.getLogger("pydbzengine._jvm")
 ################# STEP 3 JAVA REFLECTION CLASSES #################
 # Import Java classes using jpype's JClass for reflection.
 try:
-    Properties = jpype.JClass("java.util.Properties")
-    DebeziumEngine = jpype.JClass("io.debezium.engine.DebeziumEngine")
-    DebeziumEngineBuilder = jpype.JClass("io.debezium.engine.DebeziumEngine$Builder")
-    StopEngineException = jpype.JClass("io.debezium.engine.StopEngineException")
-    JavaLangSystem = jpype.JClass("java.lang.System")
-    JavaLangThread = jpype.JClass("java.lang.Thread")
+    JProperties = jpype.JClass("java.util.Properties")
+    JDebeziumEngine = jpype.JClass("io.debezium.engine.DebeziumEngine")
+    JStopEngineException = jpype.JClass("io.debezium.engine.StopEngineException")
+    JThread = jpype.JClass("java.lang.Thread")
 except Exception as e:
     if jpype.isJVMStarted():
         raise RuntimeError(
@@ -76,7 +74,7 @@ class PythonChangeConsumer:
             self._exception = (
                 e  # Capture the exception to re-raise it on caller thread.
             )
-            JavaLangThread.currentThread().interrupt()  # Interrupt the Debezium engine on error.
+            JThread.currentThread().interrupt()  # Interrupt the Debezium engine on error.
 
     @jpype.JOverride
     def supportsTombstoneEvents(self):
@@ -113,7 +111,7 @@ class PythonChangeConsumer:
         Interrupts the Debezium engine.
         """
         logger.info("Interrupt called in python consumer")
-        JavaLangThread.currentThread().interrupt()  # Interrupt the current thread (Debezium engine thread).
+        JThread.currentThread().interrupt()  # Interrupt the current thread (Debezium engine thread).
 
     def __enter__(self):
         return self

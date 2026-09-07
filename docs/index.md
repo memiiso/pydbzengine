@@ -9,8 +9,8 @@ A Pythonic interface for the [Debezium Engine](https://debezium.io/documentation
 *   **Pluggable Event Handlers**: Easily create custom handlers to process CDC events according to your specific needs.
 *   **Built-in Iceberg Handler**: Stream change events directly into Apache Iceberg tables with zero boilerplate.
 *   **Seamless Integration**: Designed to work with popular Python data tools like [dlt (data load tool)](https://dlthub.com/).
-*   **Apache Airflow Operator**: Run Debezium engines directly within Airflow DAGs using the built-in [DebeziumEngineOperator](file:///Users/simseki/IdeaProjects/pydbzengine/pydbzengine/airflow/__init__.py).
-*   **Asynchronous & Snapshot Helpers**: Run engines with time limits or terminate them automatically once initial snapshots complete using [Utils](file:///Users/simseki/IdeaProjects/pydbzengine/pydbzengine/helper.py).
+*   **Apache Airflow Operator**: Run Debezium engines directly within Airflow DAGs using the built-in `DebeziumEngineOperator` (see [Airflow docs](airflow.md)).
+*   **Asynchronous & Snapshot Helpers**: Run engines with time limits or terminate them automatically once initial snapshots complete using `Utils` (see [Helper docs](helpers.md)).
 *   **All Debezium Connectors**: Supports all standard Debezium connectors (PostgreSQL, MySQL, SQL Server, Oracle, etc.).
 
 ## How it Works

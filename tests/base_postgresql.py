@@ -73,9 +73,9 @@ class BasePostgresqlTest(unittest.TestCase):
         return conf
 
     def debezium_engine_props(self, unwrap_messages=True):
-        from pydbzengine.engine._jvm import Properties
+        from pydbzengine.engine._jvm import JProperties
 
-        props = Properties()
+        props = JProperties()
         conf = self.debezium_engine_props_dict(unwrap_messages=unwrap_messages)
         for k, v in conf.items():
             props.setProperty(k, v)

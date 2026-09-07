@@ -1,6 +1,6 @@
 # Helper Utilities
 
-The `pydbzengine` library provides a set of helper functions inside the [Utils](file:///Users/simseki/IdeaProjects/pydbzengine/pydbzengine/helper.py) class (located in `pydbzengine.helper`) to help manage the engine's lifecycle, run the engine asynchronously, or run until snapshots complete.
+The `pydbzengine` library provides a set of helper functions inside the `Utils` class (located in `pydbzengine.helper`) to help manage the engine's lifecycle, run the engine asynchronously, or run until snapshots complete.
 
 ## Methods Reference
 
@@ -15,7 +15,7 @@ def run_engine_async(
 )
 ```
 
-*   **`engine`**: The [DebeziumEngine](file:///Users/simseki/IdeaProjects/pydbzengine/pydbzengine/engine/engine.py) (or `DebeziumJsonEngine`) instance to execute.
+*   **`engine`**: The `DebeziumEngine` (or `DebeziumJsonEngine`) instance to execute.
 *   **`timeout_sec`**: The maximum execution time in seconds. Defaults to `22`.
 *   **`blocking`**: If `True`, blocks the calling thread (e.g. main thread) using `join()` until the engine completes or times out. Defaults to `True`.
 
@@ -41,7 +41,7 @@ Runs the Debezium engine in a daemon thread and monitors logging outputs. Once t
 def run_engine_until_snapshot(engine: DebeziumEngine, poll_interval_sec: int = 1)
 ```
 
-*   **`engine`**: The [DebeziumEngine](file:///Users/simseki/IdeaProjects/pydbzengine/pydbzengine/engine/engine.py) (or `DebeziumJsonEngine`) instance to execute.
+*   **`engine`**: The `DebeziumEngine` (or `DebeziumJsonEngine`) instance to execute.
 *   **`poll_interval_sec`**: The frequency (in seconds) to check log handlers for snapshot completion. Defaults to `1`.
 
 #### Example Usage

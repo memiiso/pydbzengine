@@ -1,8 +1,8 @@
 # Apache Airflow Operator
 
-`pydbzengine` provides built-in integration with Apache Airflow via the [DebeziumEngineOperator](file:///Users/simseki/IdeaProjects/pydbzengine/pydbzengine/airflow/__init__.py) located in `pydbzengine.airflow`.
+`pydbzengine` provides built-in integration with Apache Airflow via the `DebeziumEngineOperator` located in `pydbzengine.airflow`.
 
-This operator wraps the [DebeziumEngine](file:///Users/simseki/IdeaProjects/pydbzengine/pydbzengine/engine/engine.py) to run it as a task in Airflow, handling task execution and proper interruption/shutdown when a task is killed.
+This operator wraps `DebeziumEngine` to run it as a task in Airflow, handling task execution and proper interruption/shutdown when a task is killed.
 
 ## Prerequisites
 
@@ -23,7 +23,7 @@ class DebeziumEngineOperator(BaseOperator):
     def __init__(self, engine: DebeziumEngine, **kwargs) -> None
 ```
 
-*   **`engine`**: A configured instance of [DebeziumEngine](file:///Users/simseki/IdeaProjects/pydbzengine/pydbzengine/engine/engine.py).
+*   **`engine`**: A configured instance of `DebeziumEngine`.
 *   **`**kwargs`**: Pass-through arguments for `BaseOperator` (e.g. `task_id`, `dag`, `retries`).
 
 When Airflow halts the task, the operator automatically calls `engine.interrupt()` (via `on_kill`) to gracefully shut down the Debezium engine and the JVM.

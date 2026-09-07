@@ -75,12 +75,11 @@ class DebeziumEngine(LoggingMixin):
 
     def _build_engine(self) -> Any:
         self._ensure_jvm_started()
-        from pydbzengine.engine._jvm import DebeziumEngine as JDebeziumEngine
-        from pydbzengine.engine._jvm import Properties
+        from pydbzengine.engine._jvm import JDebeziumEngine, JProperties
 
         engine_format = self._resolve_format()
 
-        java_props = Properties()
+        java_props = JProperties()
         if isinstance(self.properties, dict):
             for key, value in self.properties.items():
                 java_props.setProperty(str(key), str(value))

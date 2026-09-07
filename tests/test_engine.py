@@ -76,9 +76,9 @@ class TestDebeziumEngine(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "Oops, simulation error!"):
                 engine.run()
         finally:
-            from pydbzengine.engine._jvm import JavaLangThread
+            from pydbzengine.engine._jvm import JThread
 
-            JavaLangThread.interrupted()
+            JThread.interrupted()
 
     def test_format_resolution_defaults_and_options(self) -> None:
         from pydbzengine.engine._jvm import EngineFormat
