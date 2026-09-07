@@ -6,7 +6,7 @@ from pyiceberg.catalog import load_catalog
 from pyiceberg.schema import Schema
 from pyiceberg.types import LongType, NestedField, StringType
 
-from pydbzengine import DebeziumJsonEngine
+from pydbzengine import DebeziumEngine
 from pydbzengine.handlers.iceberg import IcebergChangeHandler
 from pydbzengine.helper import Utils
 
@@ -68,7 +68,7 @@ class TestIcebergChangeHandler(BaseIcebergTest):
         )
 
         dbz_props = self.debezium_engine_props(unwrap_messages=False)
-        engine = DebeziumJsonEngine(properties=dbz_props, handler=handler)
+        engine = DebeziumEngine(properties=dbz_props, handler=handler)
 
         with self.assertLogs(IcebergChangeHandler.LOGGER_NAME, level="INFO") as cm:
             # run async then interrupt after timeout time to test the result!

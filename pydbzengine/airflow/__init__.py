@@ -11,13 +11,13 @@ except ImportError as e:
     ) from e
 
 if TYPE_CHECKING:
-    from pydbzengine import DebeziumJsonEngine
+    from pydbzengine import DebeziumEngine
 
 
 class DebeziumEngineOperator(BaseOperator):
     def __init__(
         self,
-        engine: DebeziumJsonEngine,
+        engine: DebeziumEngine,
         **kwargs: Any,
     ) -> None:
         super().__init__(**kwargs)
@@ -31,3 +31,8 @@ class DebeziumEngineOperator(BaseOperator):
     def on_kill(self) -> None:
         self.kill_called = True
         self.engine.interrupt()
+
+
+__all__ = [
+    "DebeziumEngineOperator",
+]

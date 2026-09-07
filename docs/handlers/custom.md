@@ -8,7 +8,7 @@ You only need to implement the `handleJsonBatch` method. This method receives a 
 
 ```python
 from typing import List
-from pydbzengine import ChangeEvent, BasePythonChangeHandler
+from pydbzengine import ChangeEvent, BasePythonChangeHandler, DebeziumEngine
 
 
 class MyCustomHandler(BasePythonChangeHandler):
@@ -22,6 +22,11 @@ class MyCustomHandler(BasePythonChangeHandler):
 
             # Implement your logic here (e.g., push to Kafka, call API, etc.)
             print(f"Processing event for {dest}")
+
+
+if __name__ == "__main__":
+    engine = DebeziumEngine(properties=dbz_properties, handler=MyCustomHandler())
+    engine.run()
 ```
 
 ## The ChangeEvent Object

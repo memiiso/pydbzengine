@@ -10,10 +10,10 @@
 
 ## Using a Handler
 
-To use a handler, simply pass an instance of it to the `DebeziumJsonEngine`:
+To use a handler, simply pass an instance of it to the `DebeziumEngine`:
 
 ```python
-from pydbzengine import DebeziumJsonEngine
+from pydbzengine import DebeziumEngine
 from pydbzengine.handlers.iceberg import IcebergChangeHandlerV2
 
 # ... setup catalog and props ...
@@ -22,6 +22,6 @@ props = {
     # ...
 }
 handler = IcebergChangeHandlerV2(catalog=catalog, ...)
-engine = DebeziumJsonEngine(properties=props, handler=handler)
+engine = DebeziumEngine(properties=props, handler=handler)
 engine.run()
 ```

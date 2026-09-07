@@ -4,12 +4,12 @@ import dlt
 import duckdb
 from base_postgresql import BasePostgresqlTest
 
-from pydbzengine import DebeziumJsonEngine
+from pydbzengine import DebeziumEngine
 from pydbzengine.handlers.dlt import DltChangeHandler
 from pydbzengine.helper import Utils
 
 
-class TestDebeziumJsonEngine(BasePostgresqlTest):
+class TestDltChangeHandler(BasePostgresqlTest):
     DUCK_DB = BasePostgresqlTest.CURRENT_DIR.joinpath("dbz_cdc_events.duckdb")
 
     def tearDown(self):
@@ -31,8 +31,8 @@ class TestDebeziumJsonEngine(BasePostgresqlTest):
         # create handler class, which will process generated debezium events wih dlt
         handler = DltChangeHandler(dlt_pipeline=dlt_pipeline)
         with self.assertLogs(DltChangeHandler.LOGGER_NAME, level="INFO") as cm:
-            # give the config and the handler class to the DebeziumJsonEngine
-            engine = DebeziumJsonEngine(properties=props, handler=handler)
+            # give the config and the handler class to the DebeziumEngine
+            engine = DebeziumEngine(properties=props, handler=handler)
             # run async then interrupt after timeout time to test the result!
             Utils.run_engine_async(engine=engine, timeout_sec=120)
 

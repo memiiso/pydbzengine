@@ -12,11 +12,12 @@ A Pythonic interface for the [Debezium Engine](https://debezium.io/documentation
 ## Features
 
 *   **Pure Python Interface**: Interact with the powerful Debezium Engine using simple Python classes and methods.
+*   **Multi-Format Support**: Unified engine supporting both JSON and Kafka Connect record formats (`json` and `connect`).
 *   **Pluggable Event Handlers**: Easily create custom handlers to process CDC events according to your specific needs.
 *   **Built-in Iceberg Handler**: Stream change events directly into Apache Iceberg tables with zero boilerplate.
 *   **Seamless Integration**: Designed to work with popular Python data tools like [dlt (data load tool)](https://dlthub.com/).
-*   **Apache Airflow Operator**: Run Debezium engines directly within Airflow DAGs using the built-in [DebeziumEngineOperator](file:///Users/simseki/IdeaProjects/pydbzengine/pydbzengine/airflow.py#L12-L25).
-*   **Asynchronous & Snapshot Helpers**: Run engines with time limits or terminate them automatically once initial snapshots complete using [Utils](file:///Users/simseki/IdeaProjects/pydbzengine/pydbzengine/helper.py#L20-L102).
+*   **Apache Airflow Operator**: Run Debezium engines directly within Airflow DAGs using the built-in [DebeziumEngineOperator](file:///Users/simseki/IdeaProjects/pydbzengine/pydbzengine/airflow/__init__.py).
+*   **Asynchronous & Snapshot Helpers**: Run engines with time limits or terminate them automatically once initial snapshots complete using [Utils](file:///Users/simseki/IdeaProjects/pydbzengine/pydbzengine/helper.py).
 *   **All Debezium Connectors**: Supports all standard Debezium connectors (PostgreSQL, MySQL, SQL Server, Oracle, etc.).
 
 ## How it Works
@@ -82,12 +83,11 @@ pip install "pydbzengine[dlt]"
 ### Consume events With custom Python consumer
 
 1. First install the packages: `pip install "pydbzengine[dev] @ git+https://github.com/memiiso/pydbzengine.git"`
-2. Second, extend the [BasePythonChangeHandler](file:///Users/simseki/IdeaProjects/pydbzengine/pydbzengine/__init__.py#L44-L66) and implement your Python consuming logic. See the example below:
+2. Second, extend `BasePythonChangeHandler` and implement your Python consuming logic. See the example below:
 
 ```python
 from typing import List
-from pydbzengine import ChangeEvent, BasePythonChangeHandler
-from pydbzengine import DebeziumJsonEngine
+from pydbzengine import ChangeEvent, BasePythonChangeHandler, DebeziumEngine
 
 
 class PrintChangeHandler(BasePythonChangeHandler):
@@ -130,8 +130,8 @@ if __name__ == "__main__":
         # "database.port": "3306",
     }
 
-    # Create a DebeziumJsonEngine instance, passing the configuration properties and the custom change event handler.
-    engine = DebeziumJsonEngine(properties=props, handler=PrintChangeHandler())
+    # Create a DebeziumEngine instance (default format is "json", or specify format="connect").
+    engine = DebeziumEngine(properties=props, handler=PrintChangeHandler())
 
     # Start the Debezium engine to begin consuming and processing change events.
     engine.run()
@@ -140,7 +140,7 @@ if __name__ == "__main__":
 
 ```python
 from pyiceberg.catalog import load_catalog
-from pydbzengine import DebeziumJsonEngine
+from pydbzengine import DebeziumEngine
 from pydbzengine.handlers.iceberg import IcebergChangeHandlerV2
 
 conf = {
@@ -167,7 +167,7 @@ dbz_props = {
     # Add further Debezium connector configuration properties here.  For example:
     # "connector.class": "io.debezium.connector.mysql.MySqlConnector",
 }
-engine = DebeziumJsonEngine(properties=dbz_props, handler=handler)
+engine = DebeziumEngine(properties=dbz_props, handler=handler)
 engine.run()
 ```
 
@@ -176,7 +176,7 @@ engine.run()
 For the full code please see [dlt_consuming.py](pydbzengine/examples/dlt_consuming.py)
 
 ```python
-from pydbzengine import DebeziumJsonEngine
+from pydbzengine import DebeziumEngine
 from pydbzengine.helper import Utils
 from pydbzengine.handlers.dlt import DltChangeHandler
 import dlt
@@ -194,7 +194,7 @@ dbz_props = {
     "snapshot.mode": "always",
     # ....
 }
-engine = DebeziumJsonEngine(properties=dbz_props, handler=handler)
+engine = DebeziumEngine(properties=dbz_props, handler=handler)
 
 # Run the Debezium engine asynchronously with a timeout.
 # This runs for a limited time and then terminates automatically.
