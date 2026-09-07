@@ -6,8 +6,6 @@ from iceberg_catalog import IcebergCatalogContainer
 from minio_container import MinioContainer
 from postgres_container import PostgresDbHelper
 
-from pydbzengine._jvm import Properties
-
 
 class BasePostgresqlTest(unittest.TestCase):
     CURRENT_DIR = Path(__file__).parent
@@ -15,6 +13,9 @@ class BasePostgresqlTest(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
+        from pydbzengine.engine.jvm import ensure_jvm_started
+
+        ensure_jvm_started()
         cls.postgres_db = PostgresDbHelper()
         cls.postgres_db.start()
 
@@ -72,7 +73,9 @@ class BasePostgresqlTest(unittest.TestCase):
         return conf
 
     def debezium_engine_props(self, unwrap_messages=True):
-        props = Properties()
+        from pydbzengine.engine._jvm import JProperties
+
+        props = JProperties()
         conf = self.debezium_engine_props_dict(unwrap_messages=unwrap_messages)
         for k, v in conf.items():
             props.setProperty(k, v)

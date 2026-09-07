@@ -1,6 +1,12 @@
 import json
 
-import dlt
+try:
+    import dlt
+except ImportError as e:
+    raise ImportError(
+        "dlt is required to use DltChangeHandler. "
+        "Please install it using 'pip install dlt' or 'pip install pydbzengine[dlt]'."
+    ) from e
 
 from pydbzengine import BasePythonChangeHandler, ChangeEvent
 

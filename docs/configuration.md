@@ -8,7 +8,7 @@ Below is a reference guide to the essential properties required to set up an emb
 
 ## Core Engine Properties
 
-Every `DebeziumJsonEngine` deployment requires a set of basic parameters to identify the instance and specify offset storage.
+Every `DebeziumEngine` deployment requires a set of basic parameters to identify the instance and specify offset storage.
 
 | Property | Description | Example |
 | :--- | :--- | :--- |
@@ -17,6 +17,24 @@ Every `DebeziumJsonEngine` deployment requires a set of basic parameters to iden
 | `offset.storage` | Storage class to persist database engine offsets. | `"org.apache.kafka.connect.storage.FileOffsetBackingStore"` |
 | `offset.storage.file.filename` | Local filepath to write offsets to disk. | `"/path/to/offsets.dat"` |
 | `offset.flush.interval.ms` | Interval at which engine states are committed. | `"1000"` |
+
+---
+
+## Engine Formats
+
+`DebeziumEngine` supports two record formats:
+- **`"json"`** (*default*): Change events are formatted as JSON strings.
+- **`"connect"`**: Change events are handled as native Kafka Connect `SourceRecord` objects.
+
+```python
+from pydbzengine import DebeziumEngine
+
+# Run in JSON mode (default)
+engine = DebeziumEngine(properties=dbz_properties, handler=handler)
+
+# Run in Kafka Connect mode
+engine = DebeziumEngine(properties=dbz_properties, handler=handler, format="connect")
+```
 
 ---
 

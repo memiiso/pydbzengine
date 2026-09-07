@@ -8,7 +8,6 @@ from testcontainers.core.waiting_utils import wait_for_logs
 from testcontainers.postgres import PostgresContainer
 
 from pydbzengine import DebeziumJsonEngine
-from pydbzengine._jvm import Properties
 from pydbzengine.handlers.dlt import DltChangeHandler
 from pydbzengine.helper import Utils
 
@@ -60,47 +59,36 @@ class DbPostgresql:
         self.stop()
 
 
-def debezium_engine_props(sourcedb: DbPostgresql):
-    props = Properties()
-    props.setProperty("name", "engine")
-    props.setProperty("snapshot.mode", "initial_only")
-    props.setProperty("database.hostname", sourcedb.CONTAINER.get_container_host_ip())
-    props.setProperty(
-        "database.port",
-        sourcedb.CONTAINER.get_exposed_port(sourcedb.POSTGRES_PORT_DEFAULT),
-    )
-    props.setProperty("database.user", sourcedb.POSTGRES_USER)
-    props.setProperty("database.password", sourcedb.POSTGRES_PASSWORD)
-    props.setProperty("database.dbname", sourcedb.POSTGRES_DBNAME)
-    props.setProperty(
-        "connector.class", "io.debezium.connector.postgresql.PostgresConnector"
-    )
-    props.setProperty(
-        "offset.storage", "org.apache.kafka.connect.storage.FileOffsetBackingStore"
-    )
-    props.setProperty("offset.storage.file.filename", OFFSET_FILE.as_posix())
-    props.setProperty("max.batch.size", "5")
-    props.setProperty("poll.interval.ms", "10000")
-    props.setProperty("converter.schemas.enable", "false")
-    props.setProperty("offset.flush.interval.ms", "1000")
-    props.setProperty("database.server.name", "testc")
-    props.setProperty("database.server.id", "1234")
-    props.setProperty("topic.prefix", "testc")
-    props.setProperty("schema.whitelist", "inventory")
-    props.setProperty("database.whitelist", "inventory")
-    props.setProperty("table.whitelist", "inventory.*")
-    props.setProperty("replica.identity.autoset.values", "inventory.*:FULL")
-    # // debezium unwrap message
-    props.setProperty("transforms", "unwrap")
-    props.setProperty(
-        "transforms.unwrap.type", "io.debezium.transforms.ExtractNewRecordState"
-    )
-    props.setProperty(
-        "transforms.unwrap.add.fields", "op,table,source.ts_ms,sourcedb,ts_ms"
-    )
-    props.setProperty("transforms.unwrap.delete.tombstone.handling.mode", "rewrite")
-    # props.setProperty("debezium.transforms.unwrap.drop.tombstones", "true")
-    return props
+def debezium_engine_props(sourcedb: DbPostgresql) -> dict[str, str]:
+    return {
+        "name": "engine",
+        "snapshot.mode": "initial_only",
+        "database.hostname": sourcedb.CONTAINER.get_container_host_ip(),
+        "database.port": str(
+            sourcedb.CONTAINER.get_exposed_port(sourcedb.POSTGRES_PORT_DEFAULT)
+        ),
+        "database.user": sourcedb.POSTGRES_USER,
+        "database.password": sourcedb.POSTGRES_PASSWORD,
+        "database.dbname": sourcedb.POSTGRES_DBNAME,
+        "connector.class": "io.debezium.connector.postgresql.PostgresConnector",
+        "offset.storage": "org.apache.kafka.connect.storage.FileOffsetBackingStore",
+        "offset.storage.file.filename": OFFSET_FILE.as_posix(),
+        "max.batch.size": "5",
+        "poll.interval.ms": "10000",
+        "converter.schemas.enable": "false",
+        "offset.flush.interval.ms": "1000",
+        "database.server.name": "testc",
+        "database.server.id": "1234",
+        "topic.prefix": "testc",
+        "schema.whitelist": "inventory",
+        "database.whitelist": "inventory",
+        "table.whitelist": "inventory.*",
+        "replica.identity.autoset.values": "inventory.*:FULL",
+        "transforms": "unwrap",
+        "transforms.unwrap.type": "io.debezium.transforms.ExtractNewRecordState",
+        "transforms.unwrap.add.fields": "op,table,source.ts_ms,sourcedb,ts_ms",
+        "transforms.unwrap.delete.tombstone.handling.mode": "rewrite",
+    }
 
 
 def main():

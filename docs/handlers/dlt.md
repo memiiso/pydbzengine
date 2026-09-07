@@ -12,6 +12,7 @@ The `DltChangeHandler` integrates seamlessly with the [dlt](https://dlthub.com/)
 
 ```python
 import dlt
+from pydbzengine import DebeziumEngine
 from pydbzengine.handlers.dlt import DltChangeHandler
 
 # Create a dlt pipeline
@@ -20,6 +21,10 @@ dlt_pipeline = dlt.pipeline(
 )
 
 handler = DltChangeHandler(dlt_pipeline=dlt_pipeline)
+
+# Run with DebeziumEngine
+engine = DebeziumEngine(properties=dbz_properties, handler=handler)
+engine.run()
 ```
 
 For a full working example, see [dlt_consuming.py](https://github.com/memiiso/pydbzengine/blob/main/pydbzengine/examples/dlt_consuming.py).

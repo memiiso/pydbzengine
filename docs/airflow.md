@@ -1,8 +1,8 @@
 # Apache Airflow Operator
 
-`pydbzengine` provides built-in integration with Apache Airflow via the [DebeziumEngineOperator](file:///Users/simseki/IdeaProjects/pydbzengine/pydbzengine/airflow.py#L12-L25) located in [airflow.py](file:///Users/simseki/IdeaProjects/pydbzengine/pydbzengine/airflow.py).
+`pydbzengine` provides built-in integration with Apache Airflow via the `DebeziumEngineOperator` located in `pydbzengine.airflow`.
 
-This operator wraps the [DebeziumJsonEngine](file:///Users/simseki/IdeaProjects/pydbzengine/pydbzengine/__init__.py#L68) to run it as a task in Airflow, handling task execution and proper interruption/shutdown when a task is killed.
+This operator wraps `DebeziumEngine` to run it as a task in Airflow, handling task execution and proper interruption/shutdown when a task is killed.
 
 ## Prerequisites
 
@@ -16,14 +16,14 @@ pip install "pydbzengine[dev] @ git+https://github.com/memiiso/pydbzengine.git"
 
 ### `DebeziumEngineOperator`
 
-The operator constructor takes a pre-configured `DebeziumJsonEngine` instance and standard Airflow `BaseOperator` arguments.
+The operator constructor takes a pre-configured `DebeziumEngine` instance (or `DebeziumJsonEngine`) and standard Airflow `BaseOperator` arguments.
 
 ```python
 class DebeziumEngineOperator(BaseOperator):
-    def __init__(self, engine: DebeziumJsonEngine, **kwargs) -> None
+    def __init__(self, engine: DebeziumEngine, **kwargs) -> None
 ```
 
-*   **`engine`**: A configured instance of [DebeziumJsonEngine](file:///Users/simseki/IdeaProjects/pydbzengine/pydbzengine/__init__.py#L68).
+*   **`engine`**: A configured instance of `DebeziumEngine`.
 *   **`**kwargs`**: Pass-through arguments for `BaseOperator` (e.g. `task_id`, `dag`, `retries`).
 
 When Airflow halts the task, the operator automatically calls `engine.interrupt()` (via `on_kill`) to gracefully shut down the Debezium engine and the JVM.
@@ -36,7 +36,7 @@ Here is an example demonstrating how to run Debezium within a DAG using a custom
 from datetime import datetime, timedelta
 from typing import List
 from airflow import DAG
-from pydbzengine import ChangeEvent, BasePythonChangeHandler, DebeziumJsonEngine
+from pydbzengine import ChangeEvent, BasePythonChangeHandler, DebeziumEngine
 from pydbzengine.airflow import DebeziumEngineOperator
 
 
@@ -77,7 +77,7 @@ with DAG(
     }
 
     # Instantiate engine and handler
-    engine = DebeziumJsonEngine(properties=dbz_properties, handler=MyPrintHandler())
+    engine = DebeziumEngine(properties=dbz_properties, handler=MyPrintHandler())
 
     # Create the task
     run_debezium_task = DebeziumEngineOperator(

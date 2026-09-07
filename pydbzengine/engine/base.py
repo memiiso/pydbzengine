@@ -64,9 +64,6 @@ class BasePythonChangeHandler(ABC, LoggingMixin):
     Note:
         `handleJsonBatch` intentionally uses camelCase to match the Java callback
         contract expected by `PythonChangeConsumer` (DebeziumEngine$ChangeConsumer).
-
-        For modern Pythonic sinks, inherit from `BaseSink` (pydbzengine.sinks.BaseSink)
-        and implement `consume()`.
     """
 
     @abstractmethod

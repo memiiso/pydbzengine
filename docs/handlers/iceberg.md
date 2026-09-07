@@ -15,6 +15,7 @@ This is the most advanced handler, which automatically infers the schema from th
 
 ```python
 from pyiceberg.catalog import load_catalog
+from pydbzengine import DebeziumEngine
 from pydbzengine.handlers.iceberg import IcebergChangeHandlerV2
 
 conf = {
@@ -28,6 +29,10 @@ catalog = load_catalog(name="rest", **conf)
 handler = IcebergChangeHandlerV2(
     catalog=catalog, destination_namespace=("iceberg", "debezium_cdc_data")
 )
+
+# Run with DebeziumEngine
+engine = DebeziumEngine(properties=dbz_properties, handler=handler)
+engine.run()
 ```
 
 ## IcebergChangeHandler (V1)

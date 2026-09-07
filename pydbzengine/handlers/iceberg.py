@@ -4,21 +4,27 @@ import json
 import uuid
 from abc import abstractmethod
 
-import pyarrow as pa
-from pyarrow import json as pa_json
-from pyiceberg.catalog import Catalog
-from pyiceberg.exceptions import NoSuchTableError
-from pyiceberg.partitioning import PartitionField, PartitionSpec
-from pyiceberg.schema import Schema
-from pyiceberg.table import Table
-from pyiceberg.transforms import DayTransform
-from pyiceberg.types import (
-    LongType,
-    NestedField,
-    StringType,
-    TimestampType,
-    UUIDType,
-)
+try:
+    import pyarrow as pa
+    from pyarrow import json as pa_json
+    from pyiceberg.catalog import Catalog
+    from pyiceberg.exceptions import NoSuchTableError
+    from pyiceberg.partitioning import PartitionField, PartitionSpec
+    from pyiceberg.schema import Schema
+    from pyiceberg.table import Table
+    from pyiceberg.transforms import DayTransform
+    from pyiceberg.types import (
+        LongType,
+        NestedField,
+        StringType,
+        TimestampType,
+        UUIDType,
+    )
+except ImportError as e:
+    raise ImportError(
+        "pyiceberg and pyarrow are required to use Iceberg handlers. "
+        "Please install them using 'pip install pyiceberg pyarrow' or 'pip install pydbzengine[iceberg]'."
+    ) from e
 
 from pydbzengine import BasePythonChangeHandler, ChangeEvent
 

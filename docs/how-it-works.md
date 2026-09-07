@@ -7,12 +7,12 @@
 At its core, `pydbzengine` leverages [JPype](https://jpype.readthedocs.io/en/stable/) to:
 1.  **Launch a JVM**: A Java Virtual Machine is started within the Python process.
 2.  **Load Debezium Jars**: The library bundles the necessary Debezium Engine and connector JAR files.
-3.  **Proxy Objects**: It wraps Java objects and types in Pythonic interfaces, allowing you to use `Properties` and `DebeziumJsonEngine` as if they were native Python classes.
+3.  **Proxy Objects**: It wraps Java objects and types in Pythonic interfaces, allowing you to use `Properties` and `DebeziumEngine` as if they were native Python classes (with `DebeziumJsonEngine` provided as a backward-compatible subclass).
 
 ## Data Flow
 
-1.  **Configuration**: You define your Debezium configuration using a standard Python dictionary.
-2.  **Engine Initialization**: The `DebeziumJsonEngine` is initialized with these properties and a Python-based handler.
+1.  **Configuration**: You define your Debezium configuration using a standard Python dictionary or Java `Properties`.
+2.  **Engine Initialization**: The `DebeziumEngine` is initialized with these properties, a Python-based handler, and the chosen format (`"json"` or `"connect"`).
 3.  **Event Capture**: The Java Debezium Engine captures CDC events from your source database.
 4.  **Batch Processing**: Instead of processing events one by one in Java, `pydbzengine` passes batches of events to your Python handler's `handleJsonBatch` method.
 5.  **Python Logic**: Your custom logic (or built-in handlers like Iceberg/dlt) processes the `ChangeEvent` objects in pure Python.
@@ -43,7 +43,7 @@ If JPype cannot automatically find your Java installation, you will see errors d
 ### 2. `JVMAlreadyStartedException`
 JPype starting restriction means the JVM can **only be initialized once** per Python process. If another library starts the JVM, or if you run multiple tests that independently initialize JVM setups, JPype will throw a JVM already started warning or error.
 
-*   **Solution**: The initialization module in `pydbzengine._jvm` checks `jpype.isJVMStarted()` before startup. However, if you are writing custom JVM startup scripts, always wrap it:
+*   **Solution**: The initialization module in `pydbzengine.engine.jvm` checks `jpype.isJVMStarted()` before startup (and you can call `from pydbzengine.engine.jvm import ensure_jvm_started`). However, if you are writing custom JVM startup scripts, always wrap it:
     ```python
     import jpype
 

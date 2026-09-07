@@ -1,19 +1,16 @@
 from __future__ import annotations
 
-from pydbzengine.engine import (
+from pydbzengine.engine.base import (
     BasePythonChangeHandler,
     ChangeEvent,
-    DebeziumEngine,
-    DebeziumJsonEngine,
     RecordCommitter,
 )
-from pydbzengine.logger import LoggingMixin
+from pydbzengine.engine.engine import DebeziumEngine, DebeziumJsonEngine
 
 __all__ = [
     "BasePythonChangeHandler",
     "ChangeEvent",
     "DebeziumEngine",
     "DebeziumJsonEngine",
-    "LoggingMixin",
     "RecordCommitter",
 ]

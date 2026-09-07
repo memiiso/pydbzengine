@@ -1,6 +1,6 @@
 from unittest import TestCase
 
-from pydbzengine import DebeziumJsonEngine
+from pydbzengine import DebeziumEngine, DebeziumJsonEngine
 from pydbzengine.handlers.dlt import DltChangeHandler
 from pydbzengine.handlers.iceberg import IcebergChangeHandler
 from pydbzengine.logger import LoggingMixin
@@ -39,10 +39,17 @@ class TestLoggingMixin(TestCase):
         class DummyHandler:
             pass
 
-        engine = DebeziumJsonEngine(properties={}, handler=DummyHandler())  # type: ignore[arg-type]
-        expected = f"{DebeziumJsonEngine.__module__}.{DebeziumJsonEngine.__qualname__}"
+        engine = DebeziumEngine(properties={}, handler=DummyHandler())  # type: ignore[arg-type]
+        expected = f"{DebeziumEngine.__module__}.{DebeziumEngine.__qualname__}"
         self.assertEqual(engine.logger.name, expected)
         self.assertEqual(engine.log.name, expected)
+
+        json_engine = DebeziumJsonEngine(properties={}, handler=DummyHandler())  # type: ignore[arg-type]
+        json_expected = (
+            f"{DebeziumJsonEngine.__module__}.{DebeziumJsonEngine.__qualname__}"
+        )
+        self.assertEqual(json_engine.logger.name, json_expected)
+        self.assertEqual(json_engine.log.name, json_expected)
 
     def test_legacy_dlt_handler_logger_name_preserved(self) -> None:
         class MockPipeline:
