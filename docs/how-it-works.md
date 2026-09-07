@@ -43,7 +43,7 @@ If JPype cannot automatically find your Java installation, you will see errors d
 ### 2. `JVMAlreadyStartedException`
 JPype starting restriction means the JVM can **only be initialized once** per Python process. If another library starts the JVM, or if you run multiple tests that independently initialize JVM setups, JPype will throw a JVM already started warning or error.
 
-*   **Solution**: The initialization module in `pydbzengine.engine._jvm` checks `jpype.isJVMStarted()` before startup. However, if you are writing custom JVM startup scripts, always wrap it:
+*   **Solution**: The initialization module in `pydbzengine.engine.jvm` checks `jpype.isJVMStarted()` before startup (and you can call `from pydbzengine.engine.jvm import ensure_jvm_started`). However, if you are writing custom JVM startup scripts, always wrap it:
     ```python
     import jpype
 

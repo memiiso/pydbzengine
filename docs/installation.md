@@ -17,9 +17,9 @@ You can install either the latest development version from the `main` branch or 
 # For core functionality
 pip install "git+https://github.com/memiiso/pydbzengine.git"
 
-# With extras (e.g., iceberg, dlt, docs)
-pip install "pydbzengine[iceberg,docs] @ git+https://github.com/memiiso/pydbzengine.git"
-pip install "pydbzengine[dlt,docs] @ git+https://github.com/memiiso/pydbzengine.git"
+# With extras (e.g., iceberg, dlt)
+pip install "pydbzengine[iceberg] @ git+https://github.com/memiiso/pydbzengine.git"
+pip install "pydbzengine[dlt] @ git+https://github.com/memiiso/pydbzengine.git"
 ```
 
 ### Specific Version
@@ -39,6 +39,6 @@ An older version is available on PyPI. You can install it, but be aware that it 
 pip install pydbzengine
 
 # With extras
-pip install "pydbzengine[iceberg,docs]"
-pip install "pydbzengine[dlt,docs]"
+pip install "pydbzengine[iceberg]"
+pip install "pydbzengine[dlt]"
 ```
