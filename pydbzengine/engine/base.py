@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from collections.abc import Sequence
 from typing import Any
 
 from pydbzengine.logger import LoggingMixin
@@ -66,12 +67,50 @@ class BasePythonChangeHandler(ABC, LoggingMixin):
         contract expected by `PythonChangeConsumer` (DebeziumEngine$ChangeConsumer).
     """
 
-    @abstractmethod
     def handleJsonBatch(self, records: list[ChangeEvent]) -> None:
         """
-        Handles a batch of change events received from the Java Debezium engine.
+        Java bridge callback contract. Default implementation delegates to `handle_batch`.
 
         Args:
             records: A list of ChangeEvent objects representing the changes.
         """
-        pass
+        if type(self).handle_batch is BasePythonChangeHandler.handle_batch:
+            raise NotImplementedError(
+                f"Handler '{type(self).__name__}' must implement either 'handle_batch' or 'handleJsonBatch'."
+            )
+        self.handle_batch(records)
+
+    def handle_batch(self, records: list[ChangeEvent]) -> int | None:
+        """
+        Pythonic handler method for processing batches of CDC change events.
+        Default implementation delegates to `handleJsonBatch`.
+
+        Args:
+            records: A list of ChangeEvent objects representing the changes.
+        """
+        if type(self).handleJsonBatch is BasePythonChangeHandler.handleJsonBatch:
+            raise NotImplementedError(
+                f"Handler '{type(self).__name__}' must implement either 'handle_batch' or 'handleJsonBatch'."
+            )
+        self.handleJsonBatch(records)
+        return None
+
+    def group_by_destination(
+        self,
+        records: Sequence[ChangeEvent],
+    ) -> dict[str, list[ChangeEvent]]:
+        """
+        Groups a sequence of change events by their destination table name.
+
+        Preserves arrival order of events within each destination group.
+        Subclasses may override this method to customize table routing.
+        """
+        grouped: dict[str, list[ChangeEvent]] = {}
+        for record in records:
+            dest = record.destination()
+            if not dest:
+                raise ValueError("Record contains an empty or missing destination.")
+            if dest not in grouped:
+                grouped[dest] = []
+            grouped[dest].append(record)
+        return grouped
