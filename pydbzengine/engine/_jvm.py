@@ -65,15 +65,7 @@ class PythonChangeConsumer:
         try:
             if self.handler is None:
                 raise RuntimeError("PythonChangeConsumer handler is not set!")
-            if hasattr(self.handler, "handle_batch") and callable(self.handler.handle_batch):
-                self.handler.handle_batch(records=records)
-            elif hasattr(self.handler, "handleJsonBatch") and callable(self.handler.handleJsonBatch):
-                self.handler.handleJsonBatch(records=records)
-            else:
-                raise AttributeError(
-                    f"Handler '{type(self.handler).__name__}' must implement 'handle_batch' or 'handleJsonBatch'."
-                )
-            
+            self.handler.handleJsonBatch(records=records)
             for e in records:
                 committer.markProcessed(e)  # Mark each record as processed.
             committer.markBatchFinished()  # Mark the batch as finished.
