@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 from collections.abc import Iterator, Sequence
+from dataclasses import dataclass
 from typing import (
     TYPE_CHECKING,
     Any,
     Generic,
-    NamedTuple,
     TypeVar,
 )
 
@@ -18,7 +18,8 @@ if TYPE_CHECKING:
 T_Record = TypeVar("T_Record", bound=SupportsChangeEvent)
 
 
-class StreamChunk(NamedTuple, Generic[T_Record]):
+@dataclass(frozen=True, slots=True)
+class StreamChunk(Generic[T_Record]):
     """
     A contiguous slice of CDC records sharing the exact same CanonicalSchema.
 
@@ -29,6 +30,15 @@ class StreamChunk(NamedTuple, Generic[T_Record]):
 
     schema: CanonicalSchema
     records: list[T_Record]
+
+    def __iter__(self) -> Iterator[Any]:
+        return iter((self.schema, self.records))
+
+    def __getitem__(self, index: int | slice) -> Any:
+        return (self.schema, self.records)[index]
+
+    def __len__(self) -> int:
+        return 2
 
 
 class StreamPartitioner:
