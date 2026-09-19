@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
+from functools import cached_property
 from typing import Any
 
 
@@ -37,6 +38,7 @@ class CanonicalType:
     element_type: CanonicalType | None = None  # for LIST
     key_type: CanonicalType | None = None  # for MAP
     value_type: CanonicalType | None = None  # for MAP
+    logical_type: str | None = None
 
     def __post_init__(self) -> None:
         if self.primitive == CanonicalPrimitiveType.DECIMAL:
@@ -76,6 +78,8 @@ class CanonicalType:
 
     def to_dict(self) -> dict[str, Any]:
         d: dict[str, Any] = {"primitive": self.primitive.value}
+        if self.logical_type is not None:
+            d["logical_type"] = self.logical_type
         if self.precision is not None:
             d["precision"] = self.precision
         if self.scale is not None:
@@ -114,28 +118,27 @@ class CanonicalSchema:
     identifier: str
     fields: tuple[CanonicalField, ...]
     primary_keys: tuple[str, ...] = ()
-    fingerprint: str = field(default="")
 
-    def __post_init__(self) -> None:
-        if not self.fingerprint:
-            # Deterministic structural fingerprint computed from fields and sorted primary keys
-            payload = {
-                "fields": [f.to_dict() for f in self.fields],
-                "primary_keys": sorted(self.primary_keys),
-            }
-            canonical_json = json.dumps(payload, sort_keys=True)
-            sha = hashlib.sha256(canonical_json.encode("utf-8")).hexdigest()
-            object.__setattr__(self, "fingerprint", sha)
+    @cached_property
+    def fingerprint(self) -> str:
+        """Deterministic SHA-256 fingerprint computed from fields and sorted primary keys."""
+        payload = {
+            "fields": [f.to_dict() for f in self.fields],
+            "primary_keys": sorted(self.primary_keys),
+        }
+        canonical_json = json.dumps(payload, sort_keys=True)
+        return hashlib.sha256(canonical_json.encode("utf-8")).hexdigest()
+
+    @cached_property
+    def _fields_by_name(self) -> dict[str, CanonicalField]:
+        return {f.name: f for f in self.fields}
 
     @property
     def field_names(self) -> list[str]:
         return [f.name for f in self.fields]
 
     def find_field(self, name: str) -> CanonicalField | None:
-        for f in self.fields:
-            if f.name == name:
-                return f
-        return None
+        return self._fields_by_name.get(name)
 
     def same_schema(self, other: CanonicalSchema) -> bool:
         return self.fingerprint == other.fingerprint

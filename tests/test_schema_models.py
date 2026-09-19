@@ -102,5 +102,25 @@ class TestSchemaModels(unittest.TestCase):
         self.assertEqual(schema.field_names, ["created_at"])
 
 
+    def test_logical_type_serialization_and_fingerprint(self):
+        t1 = CanonicalType(
+            primitive=CanonicalPrimitiveType.STRING,
+            logical_type="io.debezium.data.Xml",
+        )
+        self.assertEqual(t1.logical_type, "io.debezium.data.Xml")
+        self.assertEqual(t1.to_dict()["logical_type"], "io.debezium.data.Xml")
+
+        t2 = CanonicalType(primitive=CanonicalPrimitiveType.STRING)
+        self.assertNotIn("logical_type", t2.to_dict())
+
+        f1 = CanonicalField(name="content", field_type=t1)
+        f2 = CanonicalField(name="content", field_type=t2)
+        s1 = CanonicalSchema(identifier="docs", fields=(f1,))
+        s2 = CanonicalSchema(identifier="docs", fields=(f2,))
+
+        self.assertNotEqual(s1.fingerprint, s2.fingerprint)
+        self.assertFalse(s1.same_schema(s2))
+
+
 if __name__ == "__main__":
     unittest.main()

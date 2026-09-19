@@ -8,6 +8,8 @@ except ImportError as e:
         "Please install it using 'pip install dlt' or 'pip install pydbzengine[dlt]'."
     ) from e
 
+from typing import Any
+
 from pydbzengine import BasePythonChangeHandler, ChangeEvent
 
 
@@ -52,7 +54,7 @@ class DltChangeHandler(BasePythonChangeHandler):
 
     LOGGER_NAME = "debeziumdlt.DltChangeHandler"
 
-    def __init__(self, dlt_pipeline):
+    def __init__(self, dlt_pipeline: Any) -> None:
         """
         Initializes the DltChangeHandler.
 

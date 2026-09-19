@@ -1,11 +1,10 @@
 from __future__ import annotations
 
 from collections.abc import Iterator, Sequence
-from dataclasses import dataclass
 from typing import (
     TYPE_CHECKING,
-    Any,
     Generic,
+    NamedTuple,
     TypeVar,
 )
 
@@ -18,8 +17,7 @@ if TYPE_CHECKING:
 T_Record = TypeVar("T_Record", bound=SupportsChangeEvent)
 
 
-@dataclass(frozen=True, slots=True)
-class StreamChunk(Generic[T_Record]):
+class StreamChunk(NamedTuple, Generic[T_Record]):
     """
     A contiguous slice of CDC records sharing the exact same CanonicalSchema.
 
@@ -30,15 +28,6 @@ class StreamChunk(Generic[T_Record]):
 
     schema: CanonicalSchema
     records: list[T_Record]
-
-    def __iter__(self) -> Iterator[Any]:
-        return iter((self.schema, self.records))
-
-    def __getitem__(self, index: int | slice) -> Any:
-        return (self.schema, self.records)[index]
-
-    def __len__(self) -> int:
-        return 2
 
 
 class StreamPartitioner:
@@ -59,25 +48,16 @@ class StreamPartitioner:
         """
         current_schema: CanonicalSchema | None = None
         current_chunk: list[T_Record] = []
-        last_raw_val: Any = None
 
         for record in records:
             if not schema_reader.can_read(record):
-                continue
-
-            raw_val = record.value() if hasattr(record, "value") else None
-            # Check if this record's schema matches the active chunk schema
-            if (
-                raw_val is not None
-                and raw_val is last_raw_val
-                and current_schema is not None
-            ):
-                record_schema = current_schema
-            else:
-                record_schema = schema_reader.extract_schema(
-                    record, flattening_enabled=flattening_enabled
+                raise ValueError(
+                    f"Schema reader {type(schema_reader).__name__} cannot read record: {record!r}"
                 )
-                last_raw_val = raw_val
+
+            record_schema = schema_reader.extract_schema(
+                record, flattening_enabled=flattening_enabled
+            )
 
             if (
                 current_schema is not None

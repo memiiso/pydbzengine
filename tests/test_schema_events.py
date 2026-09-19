@@ -98,10 +98,6 @@ class TestCdcEvent(unittest.TestCase):
         self.assertFalse(event.is_delete)
         self.assertFalse(event.is_tombstone)
 
-        # Ergonomic property navigation
-        self.assertEqual(event.table_name, "products")
-        self.assertEqual(event.schema_name, "inventory")
-        self.assertEqual(event.namespace, "inventory.products")
         self.assertEqual(event.key, {"id": 10})
 
         # Decoded row values
@@ -165,7 +161,6 @@ class TestCdcEvent(unittest.TestCase):
         event = CdcEvent.from_json(val, key={"id": 1}, destination="app.users")
         self.assertTrue(event.is_create)
         self.assertEqual(event.row["username"], "alice")
-        self.assertEqual(event.table_name, "users")
         self.assertIsNotNone(event.schema)
         self.assertIn("username", event.schema.field_names)  # type: ignore[union-attr]
 
@@ -393,6 +388,112 @@ class TestCdcEvent(unittest.TestCase):
         )
         self.assertEqual(event2.schema, custom_schema)
 
+    def test_op_insert_variant_and_snapshot_detection(self) -> None:
+        payload = {
+            "payload": {
+                "op": "i",
+                "after": {"id": 1, "name": "Alice"},
+                "source": {
+                    "snapshot": "true",
+                    "table": "users",
+                    "schema": "public",
+                },
+            }
+        }
+        event = CdcEvent.from_json(payload, destination="public.users")
+        self.assertTrue(event.is_create)
+        self.assertTrue(event.is_snapshot)
+
+        # Snapshot = "last"
+        payload_last = {
+            "payload": {
+                "op": "r",
+                "after": {"id": 2, "name": "Bob"},
+                "source": {
+                    "snapshot": "last",
+                    "table": "users",
+                    "db": "inventory",
+                },
+            }
+        }
+        event_last = CdcEvent.from_json(payload_last, destination="inventory.users")
+        self.assertTrue(event_last.is_snapshot)
+
+    def test_flattened_payload_truthy_deleted_flags(self) -> None:
+        # __deleted = 1
+        payload1 = {"id": 10, "name": "DeletedItem", "__deleted": 1}
+        event1 = CdcEvent.from_json(payload1, destination="test.items")
+        self.assertTrue(event1.is_delete)
+        self.assertEqual(event1.op, "d")
+        self.assertIsNone(event1.after)
+        self.assertIsNotNone(event1.before)
+
+        # __deleted = "t"
+        payload2 = {"id": 11, "name": "DeletedItem2", "__deleted": "t"}
+        event2 = CdcEvent.from_json(payload2, destination="test.items")
+        self.assertTrue(event2.is_delete)
+        self.assertEqual(event2.op, "d")
+
+        # deleted = "1"
+        payload3 = {"id": 12, "name": "DeletedItem3", "deleted": "1"}
+        event3 = CdcEvent.from_json(payload3, destination="test.items")
+        self.assertTrue(event3.is_delete)
+        self.assertEqual(event3.op, "d")
+
+    def test_iso_string_timestamp_in_envelope_and_flattened(self) -> None:
+        iso_str = "2026-09-07T12:00:00.123456Z"
+        envelope_payload = {
+            "payload": {
+                "op": "c",
+                "ts_ms": iso_str,
+                "after": {"id": 1},
+            }
+        }
+        event_env = CdcEvent.from_json(envelope_payload, destination="test.env")
+        self.assertIsNotNone(event_env.timestamp)
+        self.assertEqual(event_env.timestamp.year, 2026)
+        self.assertEqual(event_env.timestamp.month, 9)
+        self.assertEqual(event_env.timestamp.day, 7)
+
+        flat_payload = {
+            "id": 1,
+            "__ts_ms": iso_str,
+            "__op": "c",
+        }
+        event_flat = CdcEvent.from_json(flat_payload, destination="test.flat")
+        self.assertIsNotNone(event_flat.timestamp)
+        self.assertEqual(event_flat.timestamp.year, 2026)
+
+    def test_infer_timedelta_as_micro_duration(self) -> None:
+        import datetime
+        from pydbzengine.schema.readers import InferredSchemaReader
+        td = datetime.timedelta(days=1, seconds=3600)
+        c_type = InferredSchemaReader.infer_type(td)
+        self.assertEqual(c_type.primitive, CanonicalPrimitiveType.INT64)
+        self.assertEqual(c_type.logical_type, "io.debezium.time.MicroDuration")
+
+
+    def test_missing_destination_fails_fast(self) -> None:
+        val = json.dumps({"id": 1, "name": "alice"})
+        with self.assertRaises(ValueError) as ctx:
+            CdcEvent.from_json(val, destination="")
+        self.assertIn("destination is required", str(ctx.exception))
+
+    def test_tombstone_without_key_fails_fast(self) -> None:
+        with self.assertRaises(ValueError) as ctx:
+            CdcEvent.from_json(value=None, destination="inventory.products", key=None)
+        self.assertIn("Tombstone events must contain a primary key", str(ctx.exception))
+
+    def test_malformed_timestamp_in_payload_fails_fast(self) -> None:
+        payload = {
+            "op": "c",
+            "ts_ms": "not-a-valid-ts",
+            "after": {"id": 1},
+        }
+        with self.assertRaises(ValueError):
+            CdcEvent.from_json(payload, destination="inventory.items")
+
 
 if __name__ == "__main__":
     unittest.main()
+

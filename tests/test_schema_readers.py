@@ -754,6 +754,162 @@ class TestDebeziumSchemaReader(unittest.TestCase):
             f_metrics.field_type.value_type.primitive, CanonicalPrimitiveType.INT32
         )  # type: ignore[union-attr]
 
+    def test_extract_all_extended_logical_types(self) -> None:
+        event_payload = {
+            "schema": {
+                "type": "struct",
+                "fields": [
+                    {
+                        "type": "struct",
+                        "field": "after",
+                        "fields": [
+                            {"type": "string", "name": "io.debezium.data.Xml", "field": "f_xml"},
+                            {"type": "string", "name": "io.debezium.data.Ltree", "field": "f_ltree"},
+                            {"type": "map", "name": "io.debezium.data.Hstore", "field": "f_hstore"},
+                            {"type": "int32", "name": "io.debezium.time.IntervalYearToMonth", "field": "f_iym"},
+                            {"type": "int64", "name": "io.debezium.time.IntervalDayToSecond", "field": "f_ids"},
+                            {"type": "int64", "name": "io.debezium.data.BsonTimestamp", "field": "f_bson_ts"},
+                            {"type": "string", "name": "io.debezium.data.ObjectId", "field": "f_obj_id"},
+                            {"type": "struct", "name": "io.debezium.data.geometry.Geometry", "field": "f_geom"},
+                            {"type": "struct", "name": "io.debezium.data.geometry.Geography", "field": "f_geog"},
+                            {"type": "struct", "name": "io.debezium.data.geometry.Point", "field": "f_point"},
+                        ],
+                    }
+                ],
+            },
+            "payload": {"after": {}},
+        }
+        rec = MockChangeEvent(
+            key=None,
+            value=json.dumps(event_payload),
+            destination="ext.logical_types",
+        )
+        schema = self.reader.extract_schema(rec)
+        self.assertEqual(schema.find_field("f_xml").field_type.primitive, CanonicalPrimitiveType.STRING)
+        self.assertEqual(schema.find_field("f_xml").field_type.logical_type, "io.debezium.data.Xml")
+
+        self.assertEqual(schema.find_field("f_ltree").field_type.primitive, CanonicalPrimitiveType.STRING)
+        self.assertEqual(schema.find_field("f_ltree").field_type.logical_type, "io.debezium.data.Ltree")
+
+        self.assertEqual(schema.find_field("f_hstore").field_type.primitive, CanonicalPrimitiveType.MAP)
+        self.assertEqual(schema.find_field("f_hstore").field_type.logical_type, "io.debezium.data.Hstore")
+
+        self.assertEqual(schema.find_field("f_iym").field_type.primitive, CanonicalPrimitiveType.INT32)
+        self.assertEqual(schema.find_field("f_ids").field_type.primitive, CanonicalPrimitiveType.INT64)
+        self.assertEqual(schema.find_field("f_bson_ts").field_type.primitive, CanonicalPrimitiveType.TIMESTAMP)
+        self.assertEqual(schema.find_field("f_obj_id").field_type.primitive, CanonicalPrimitiveType.STRING)
+
+        geom = schema.find_field("f_geom")
+        self.assertEqual(geom.field_type.primitive, CanonicalPrimitiveType.STRUCT)
+        self.assertEqual([f.name for f in geom.field_type.fields], ["wkb", "srid"])
+
+        geog = schema.find_field("f_geog")
+        self.assertEqual(geog.field_type.primitive, CanonicalPrimitiveType.STRUCT)
+        self.assertEqual([f.name for f in geog.field_type.fields], ["wkb", "srid"])
+
+        pt = schema.find_field("f_point")
+        self.assertEqual(pt.field_type.primitive, CanonicalPrimitiveType.STRUCT)
+        self.assertEqual([f.name for f in pt.field_type.fields], ["x", "y", "srid"])
+
+    def test_extract_all_primitive_aliases(self) -> None:
+        type_aliases = [
+            ("f_tinyint", "tinyint", CanonicalPrimitiveType.INT8),
+            ("f_smallint", "smallint", CanonicalPrimitiveType.INT16),
+            ("f_bigint", "bigint", CanonicalPrimitiveType.INT64),
+            ("f_float4", "float4", CanonicalPrimitiveType.FLOAT),
+            ("f_real", "real", CanonicalPrimitiveType.FLOAT),
+            ("f_varchar", "varchar", CanonicalPrimitiveType.STRING),
+            ("f_char", "char", CanonicalPrimitiveType.STRING),
+            ("f_clob", "clob", CanonicalPrimitiveType.STRING),
+            ("f_date", "date", CanonicalPrimitiveType.DATE),
+            ("f_time", "time", CanonicalPrimitiveType.TIME),
+            ("f_timestamp", "timestamp", CanonicalPrimitiveType.TIMESTAMP),
+            ("f_timestamptz", "timestamptz", CanonicalPrimitiveType.TIMESTAMPTZ),
+            ("f_blob", "blob", CanonicalPrimitiveType.BINARY),
+            ("f_varbinary", "varbinary", CanonicalPrimitiveType.BINARY),
+        ]
+        fields = [{"type": t, "field": n} for n, t, _ in type_aliases]
+        fields.append({
+            "type": "numeric",
+            "field": "f_numeric",
+            "parameters": {"scale": "4", "precision": "20"},
+        })
+        event_payload = {
+            "schema": {
+                "type": "struct",
+                "fields": [{"type": "struct", "field": "after", "fields": fields}],
+            },
+            "payload": {"after": {}},
+        }
+        rec = MockChangeEvent(key=None, value=json.dumps(event_payload), destination="aliases.test")
+        schema = self.reader.extract_schema(rec)
+        for n, _, expected_prim in type_aliases:
+            f = schema.find_field(n)
+            self.assertIsNotNone(f, f"Field {n} missing")
+            self.assertEqual(f.field_type.primitive, expected_prim, f"Mismatch for {n}")
+
+        f_num = schema.find_field("f_numeric")
+        self.assertEqual(f_num.field_type.primitive, CanonicalPrimitiveType.DECIMAL)
+        self.assertEqual(f_num.field_type.scale, 4)
+        self.assertEqual(f_num.field_type.precision, 20)
+
+    def test_extract_primary_keys_robustness(self) -> None:
+        # 1. Byte key
+        rec_bytes = MockChangeEvent(
+            key=b'{"id": 123, "code": "ABC"}',
+            value=json.dumps({
+                "schema": {"type": "struct", "fields": [{"type": "int32", "field": "id"}]},
+                "payload": {"id": 123},
+            }),
+            destination="pk.test",
+        )
+        schema1 = self.reader.extract_schema(rec_bytes)
+        self.assertEqual(set(schema1.primary_keys), {"id", "code"})
+
+        # 2. Raw scalar key (not json)
+        rec_scalar = MockChangeEvent(
+            key="simple-string-key",
+            value=json.dumps({
+                "schema": {"type": "struct", "fields": [{"type": "int32", "field": "id"}]},
+                "payload": {"id": 123},
+            }),
+            destination="pk.test",
+        )
+        schema2 = self.reader.extract_schema(rec_scalar)
+        self.assertEqual(schema2.primary_keys, ("key",))
+
+        # 3. Numeric scalar key
+        rec_num = MockChangeEvent(
+            key=42,
+            value=json.dumps({
+                "schema": {"type": "struct", "fields": [{"type": "int32", "field": "id"}]},
+                "payload": {"id": 42},
+            }),
+            destination="pk.test",
+        )
+        schema3 = self.reader.extract_schema(rec_num)
+        self.assertEqual(schema3.primary_keys, ("key",))
+
+    def test_metadata_timestamp_fields_canonical_type(self) -> None:
+        event_payload = {
+            "schema": {
+                "type": "struct",
+                "fields": [
+                    {"type": "int64", "field": "__ts_ms"},
+                    {"type": "int64", "field": "__source_ts_ms"},
+                    {"type": "int64", "field": "ts_ms"},
+                ],
+            },
+            "payload": {"__ts_ms": 1788782400000},
+        }
+        rec = MockChangeEvent(key=None, value=json.dumps(event_payload), destination="meta.ts")
+        schema = self.reader.extract_schema(rec)
+        for ts_col in ("__ts_ms", "__source_ts_ms", "ts_ms"):
+            f = schema.find_field(ts_col)
+            self.assertIsNotNone(f)
+            self.assertEqual(f.field_type.primitive, CanonicalPrimitiveType.TIMESTAMPTZ)
+            self.assertEqual(f.field_type.logical_type, "io.debezium.time.ZonedTimestamp")
+
 
 if __name__ == "__main__":
     unittest.main()

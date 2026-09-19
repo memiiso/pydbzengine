@@ -79,7 +79,7 @@ class Utils:
                                 )
                                 engine.close()
                                 return
-                    except Exception:
+                    except (OSError, UnicodeDecodeError):
                         pass
 
                 # 2. Fallback check: check Python logging root handlers (safe check)
@@ -95,7 +95,7 @@ class Utils:
                                     )
                                     engine.close()
                                     return
-                        except Exception:
+                        except (AttributeError, TypeError):
                             continue
 
                 time.sleep(poll_interval_sec)

@@ -291,6 +291,132 @@ class TestSchemaDecoders(unittest.TestCase):
         self.assertEqual(decoded["id"], 100)
         self.assertEqual(decoded["tags"], ["1", "2", "3"])
 
+    def test_decode_decimal_38_digit_exact_precision(self) -> None:
+        # 38-digit integer
+        val_38 = 12345678901234567890123456789012345678
+        raw_bytes = val_38.to_bytes((val_38.bit_length() + 8) // 8, byteorder="big", signed=True)
+        b64_val = base64.b64encode(raw_bytes).decode("ascii")
+
+        # Must not lose precision or round at 28 digits (Python context default)
+        decoded = self.decoder.decode_decimal(b64_val, scale=10)
+        expected = Decimal("1234567890123456789012345678.9012345678")
+        self.assertEqual(decoded, expected)
+        self.assertEqual(str(decoded), "1234567890123456789012345678.9012345678")
+
+        # Negative 38-digit integer
+        neg_val_38 = -val_38
+        neg_bytes = neg_val_38.to_bytes((neg_val_38.bit_length() + 8) // 8, byteorder="big", signed=True)
+        neg_b64 = base64.b64encode(neg_bytes).decode("ascii")
+        neg_decoded = self.decoder.decode_decimal(neg_b64, scale=10)
+        self.assertEqual(neg_decoded, Decimal("-1234567890123456789012345678.9012345678"))
+
+    def test_decode_decimal_java_big_decimal_and_byte_buffer(self) -> None:
+        class MockBigDecimal:
+            def toPlainString(self) -> str:
+                return "1234567890.0987654321"
+
+        class MockByteBuffer:
+            def hasArray(self) -> bool:
+                return True
+
+            def array(self) -> bytes:
+                return (12345).to_bytes(4, byteorder="big", signed=True)
+
+        self.assertEqual(
+            self.decoder.decode_decimal(MockBigDecimal(), scale=0),
+            Decimal("1234567890.0987654321"),
+        )
+        self.assertEqual(
+            self.decoder.decode_decimal(MockByteBuffer(), scale=2),
+            Decimal("123.45"),
+        )
+
+    def test_decode_field_string_from_bytes_no_b_prefix(self) -> None:
+        str_type = CanonicalType(primitive=CanonicalPrimitiveType.STRING)
+        self.assertEqual(self.decoder.decode_field(b"Hello world", str_type), "Hello world")
+        self.assertEqual(
+            self.decoder.decode_field(bytearray(b"Hello world"), str_type),
+            "Hello world",
+        )
+
+    def test_decode_uuid_36_byte_utf8(self) -> None:
+        raw_uuid_bytes = b"c9a646d3-9c61-4073-8946-f94d93d3b762"
+        decoded = self.decoder.decode_uuid(raw_uuid_bytes)
+        self.assertEqual(decoded, uuid.UUID("c9a646d3-9c61-4073-8946-f94d93d3b762"))
+
+    def test_nanosecond_iso_string_truncation(self) -> None:
+        iso_str = "2026-09-07T12:00:00.123456789Z"
+        d = self.decoder.decode_date(iso_str)
+        self.assertEqual(d, datetime.date(2026, 9, 7))
+
+        t = self.decoder.decode_time("12:00:00.123456789Z")
+        self.assertEqual(t, datetime.time(12, 0, 0, 123456, tzinfo=datetime.timezone.utc))
+
+        ts = self.decoder.decode_timestamp(iso_str)
+        self.assertEqual(
+            ts,
+            datetime.datetime(2026, 9, 7, 12, 0, 0, 123456, tzinfo=datetime.timezone.utc),
+        )
+
+    def test_decode_date_from_large_epoch_timestamps(self) -> None:
+        # > 10,000,000 days indicates epoch ms or us, not epoch days
+        # 1788782400000 ms = 2026-09-07T12:00:00 UTC
+        d = self.decoder.decode_date(1788782400000)
+        self.assertEqual(d, datetime.date(2026, 9, 7))
+
+    def test_decode_java_struct_list_map(self) -> None:
+        class MockJavaStruct:
+            def schema(self) -> Any:
+                return self
+
+            def get(self, name: str) -> Any:
+                data = {"name": "Alice", "age": 30}
+                return data.get(name)
+
+        schema = CanonicalSchema(
+            identifier="test.person",
+            fields=(
+                CanonicalField(name="name", field_type=CanonicalType(primitive=CanonicalPrimitiveType.STRING)),
+                CanonicalField(name="age", field_type=CanonicalType(primitive=CanonicalPrimitiveType.INT32)),
+            ),
+        )
+        row = self.decoder.decode_row(MockJavaStruct(), schema)
+        self.assertEqual(row, {"name": "Alice", "age": 30})
+
+        # Mock Java List with toArray
+        class MockJavaList:
+            def toArray(self) -> list[int]:
+                return [10, 20, 30]
+
+        list_type = CanonicalType(
+            primitive=CanonicalPrimitiveType.LIST,
+            element_type=CanonicalType(primitive=CanonicalPrimitiveType.INT32),
+        )
+        self.assertEqual(self.decoder.decode_field(MockJavaList(), list_type), [10, 20, 30])
+
+        # Mock Java Map with entrySet
+        class MockEntry:
+            def __init__(self, k: str, v: int) -> None:
+                self._k = k
+                self._v = v
+
+            def getKey(self) -> str:
+                return self._k
+
+            def getValue(self) -> int:
+                return self._v
+
+        class MockJavaMap:
+            def entrySet(self) -> list[MockEntry]:
+                return [MockEntry("k1", 100), MockEntry("k2", 200)]
+
+        map_type = CanonicalType(
+            primitive=CanonicalPrimitiveType.MAP,
+            key_type=CanonicalType(primitive=CanonicalPrimitiveType.STRING),
+            value_type=CanonicalType(primitive=CanonicalPrimitiveType.INT32),
+        )
+        self.assertEqual(self.decoder.decode_field(MockJavaMap(), map_type), {"k1": 100, "k2": 200})
+
 
 if __name__ == "__main__":
     unittest.main()

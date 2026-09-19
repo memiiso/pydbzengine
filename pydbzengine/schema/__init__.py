@@ -6,7 +6,10 @@ from pydbzengine.schema.base import (
 )
 from pydbzengine.schema.decoders import (
     DEFAULT_VALUE_DECODER,
+    ComplexDecoder,
     ConnectValueDecoder,
+    NumericDecoder,
+    TemporalDecoder,
     ValueDecoder,
 )
 from pydbzengine.schema.events import (
@@ -23,7 +26,11 @@ from pydbzengine.schema.partitioner import (
     StreamChunk,
     StreamPartitioner,
 )
-from pydbzengine.schema.readers import DebeziumSchemaReader
+from pydbzengine.schema.readers import (
+    DebeziumSchemaReader,
+    InferredSchemaReader,
+    KeyReader,
+)
 
 __all__ = [
     "DEFAULT_VALUE_DECODER",
@@ -34,10 +41,15 @@ __all__ = [
     "CanonicalType",
     "CdcEvent",
     "CdcEventParser",
+    "ComplexDecoder",
     "ConnectValueDecoder",
     "DebeziumSchemaReader",
+    "InferredSchemaReader",
+    "KeyReader",
+    "NumericDecoder",
     "StreamChunk",
     "StreamPartitioner",
     "SupportsChangeEvent",
+    "TemporalDecoder",
     "ValueDecoder",
 ]

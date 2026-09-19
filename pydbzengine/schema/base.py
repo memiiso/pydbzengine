@@ -3,7 +3,6 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import Any, Protocol, runtime_checkable
 
-from pydbzengine.logger import LoggingMixin
 from pydbzengine.schema.models import CanonicalSchema
 
 __all__ = [
@@ -22,7 +21,7 @@ class SupportsChangeEvent(Protocol):
     def partition(self) -> int: ...
 
 
-class BaseSchemaReader(ABC, LoggingMixin):
+class BaseSchemaReader(ABC):
     """Abstract base class for extracting canonical schemas from CDC change events."""
 
     @abstractmethod
