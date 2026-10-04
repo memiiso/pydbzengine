@@ -83,15 +83,15 @@ class BaseIcebergChangeHandler(BasePythonChangeHandler):
     def _handle_table_changes(self, destination: str, records: list[ChangeEvent]):
         raise NotImplementedError
 
-    def get_table(self, destination: str) -> "Table":
+    def get_table(self, destination: str) -> Table:
         if destination not in self.tables:
             table_identifier: tuple = self.destination_to_table_identifier(destination)
-            table = self.load_table(table_identifier=table_identifier)
-            if table is not None:
-                self.tables[destination] = table
-        return self.tables.get(destination)
+            self.tables[destination] = self.load_table(
+                table_identifier=table_identifier
+            )
+        return self.tables[destination]
 
-    def load_table(self, table_identifier):
+    def load_table(self, table_identifier: tuple) -> Table:
         return self.catalog.load_table(identifier=table_identifier)
 
     def destination_to_table_identifier(self, destination: str) -> tuple:
@@ -299,8 +299,9 @@ class IcebergChangeHandlerV2(BaseIcebergChangeHandler):
         if not records:
             return
 
-        table = self.get_table(destination)
-        if table is None:
+        try:
+            table = self.get_table(destination)
+        except NoSuchTableError:
             table_identifier: tuple = self.destination_to_table_identifier(
                 destination=destination
             )
@@ -376,12 +377,6 @@ class IcebergChangeHandlerV2(BaseIcebergChangeHandler):
                 explicit_schema=schema.as_arrow(), unexpected_field_behavior="infer"
             )
         return pa_json.read_json(json_lines_buffer, parse_options=parse_options)
-
-    def load_table(self, table_identifier):
-        try:
-            return self.catalog.load_table(identifier=table_identifier)
-        except NoSuchTableError:
-            return None
 
     def _infer_and_create_table(
         self, records: list[ChangeEvent], table_identifier: tuple
