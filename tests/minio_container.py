@@ -10,7 +10,7 @@ class MinioContainer:
     AWS_REGION = "us-east-1"
     S3_WAREHOUSE_BUCKET = "icebergdata"
 
-    def __init__(self, image="minio/minio:RELEASE.2025-04-08T15-41-24Z"):
+    def __init__(self, image="pgsty/silo:RELEASE.2026-09-16T00-00-00Z"):
         self.minio = (
             MinioDockerContainer(
                 image=image,
