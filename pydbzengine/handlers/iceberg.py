@@ -86,9 +86,10 @@ class BaseIcebergChangeHandler(BasePythonChangeHandler):
     def get_table(self, destination: str) -> Table:
         if destination not in self.tables:
             table_identifier: tuple = self.destination_to_table_identifier(destination)
-            self.tables[destination] = self.load_table(
-                table_identifier=table_identifier
-            )
+            table = self.load_table(table_identifier=table_identifier)
+            if table is None:
+                raise NoSuchTableError(f"Iceberg table {'.'.join(table_identifier)} not found.")
+            self.tables[destination] = table
         return self.tables[destination]
 
     def load_table(self, table_identifier: tuple) -> Table:
@@ -281,7 +282,7 @@ class IcebergChangeHandlerV2(BaseIcebergChangeHandler):
         catalog: "Catalog",
         destination_namespace: tuple,
         supports_variant: bool = False,
-        event_flattening_enabled=False,
+        event_flattening_enabled: bool = False,
     ):
         super().__init__(catalog, destination_namespace, supports_variant)
         self.event_flattening_enabled = event_flattening_enabled
@@ -362,7 +363,9 @@ class IcebergChangeHandlerV2(BaseIcebergChangeHandler):
 
         return enriched_table
 
-    def _read_to_arrow_table(self, records, schema=None):
+    def _read_to_arrow_table(
+        self, records: list[ChangeEvent], schema: Schema | None = None
+    ) -> pa.Table:
         json_lines_buffer = io.BytesIO()
         for record in records:
             val = record.value()
