@@ -4,12 +4,10 @@ import time
 import pandas as pd
 import pyarrow as pa
 import pyarrow.json as pj
-from base_postgresql import BaseIcebergTest
-from minio_container import MinioContainer
-from mock_events import MockChangeEvent
 from pyiceberg.catalog import load_catalog
 
 from pydbzengine.handlers.iceberg import IcebergChangeHandlerV2
+from tests.support import BaseIcebergTest, MinioContainer, MockChangeEvent
 
 
 class TestIcebergChangeHandlerV2(BaseIcebergTest):

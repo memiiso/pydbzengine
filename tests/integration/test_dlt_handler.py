@@ -1,16 +1,18 @@
 import os
+import tempfile
+from pathlib import Path
 
 import dlt
 import duckdb
-from base_postgresql import BasePostgresqlTest
 
 from pydbzengine import DebeziumEngine
 from pydbzengine.handlers.dlt import DltChangeHandler
 from pydbzengine.helper import Utils
+from tests.support import BasePostgresqlTest
 
 
 class TestDltChangeHandler(BasePostgresqlTest):
-    DUCK_DB = BasePostgresqlTest.CURRENT_DIR.joinpath("dbz_cdc_events.duckdb")
+    DUCK_DB = Path(tempfile.gettempdir()) / "pydbzengine-test-dbz_cdc_events.duckdb"
 
     def tearDown(self):
         if self.DUCK_DB.is_file() and self.DUCK_DB.exists():

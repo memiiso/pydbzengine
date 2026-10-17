@@ -1,7 +1,5 @@
 import unittest
 
-from base_postgresql import BaseIcebergTest
-from minio_container import MinioContainer
 from pyiceberg.catalog import load_catalog
 from pyiceberg.schema import Schema
 from pyiceberg.types import LongType, NestedField, StringType
@@ -9,6 +7,7 @@ from pyiceberg.types import LongType, NestedField, StringType
 from pydbzengine import DebeziumEngine
 from pydbzengine.handlers.iceberg import IcebergChangeHandler
 from pydbzengine.helper import Utils
+from tests.support import BaseIcebergTest, MinioContainer
 
 
 class TestIcebergChangeHandler(BaseIcebergTest):

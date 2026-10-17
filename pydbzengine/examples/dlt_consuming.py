@@ -36,7 +36,7 @@ class DbPostgresql:
         password=POSTGRES_PASSWORD,
         dbname=POSTGRES_DBNAME,
     ).with_exposed_ports(POSTGRES_PORT_DEFAULT)
-    PostgresContainer._connect = wait_for_postgresql_to_start
+    PostgresContainer._connect = wait_for_postgresql_to_start  # type: ignore[method-assign]
 
     def clean_files(self):
         if OFFSET_FILE.exists():
