@@ -88,7 +88,9 @@ class BaseIcebergChangeHandler(BasePythonChangeHandler):
             table_identifier: tuple = self.destination_to_table_identifier(destination)
             table = self.load_table(table_identifier=table_identifier)
             if table is None:
-                raise NoSuchTableError(f"Iceberg table {'.'.join(table_identifier)} not found.")
+                raise NoSuchTableError(
+                    f"Iceberg table {'.'.join(table_identifier)} not found."
+                )
             self.tables[destination] = table
         return self.tables[destination]
 
