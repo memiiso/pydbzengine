@@ -19,7 +19,7 @@ jobs:
           fetch-depth: 0 # Resolves correct version if using setuptools-scm
 
       - name: Set up Java
-        uses: actions/setup-java@v5
+        uses: actions/setup-java@v6
         with:
           java-version: '17'
           distribution: 'temurin'
