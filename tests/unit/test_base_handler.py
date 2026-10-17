@@ -3,17 +3,8 @@ from __future__ import annotations
 import unittest
 from collections.abc import Sequence
 
-from mock_events import MockChangeEvent
-
 from pydbzengine.engine import BasePythonChangeHandler, ChangeEvent
-
-
-def make_test_event(dest: str, payload: str = "test") -> MockChangeEvent:
-    return MockChangeEvent(
-        key='{"id": 1}',
-        value=payload,
-        destination=dest,
-    )
+from tests.support import make_test_event
 
 
 class ConcreteMockSink(BasePythonChangeHandler):
@@ -29,7 +20,7 @@ class ConcreteMockSink(BasePythonChangeHandler):
             self.total_processed += len(dest_records)
 
 
-class TestHandlersAbstractDesign(unittest.TestCase):
+class TestBasePythonChangeHandler(unittest.TestCase):
     def test_base_python_change_handler_destination_grouping(self) -> None:
         """Verifies BasePythonChangeHandler.group_by_destination cleanly separates interleaved tables."""
         records: list[ChangeEvent] = [

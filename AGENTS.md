@@ -45,7 +45,7 @@ Before modifying code, confirm:
 ## 4. Testing Standards
 
 1. **Production Precedence**: Production code is the source of truth. NEVER weaken production contracts or modify production logic solely to make tests easier to write.
-2. **Realistic Payloads over Mock Hierarchies**: For unit tests (schema readers, decoders, event models, configs), test pure logic with realistic Debezium event structures (`mock_events.py`) without mocking internal methods. Use `testcontainers` for real end-to-end integration tests (PostgreSQL, MinIO). Ban fragile, deep monkeypatching mock trees.
+2. **Realistic Payloads over Mock Hierarchies**: For unit tests (schema readers, decoders, event models, configs), test pure logic with realistic Debezium event structures (`tests/support/mock_events.py`) without mocking internal methods. Use `testcontainers` for real end-to-end integration tests (PostgreSQL, MinIO). Ban fragile, deep monkeypatching mock trees.
 3. **Behavioral Assertions**: Test observable behavior, data transformations, and state transitions, not implementation trivia. Name tests behaviorally: `test_<feature>_<scenario>`.
 
 ---
@@ -55,4 +55,4 @@ Before modifying code, confirm:
 Run before submitting changes:
 - **Lint**: `ruff check .` (or `uv run ruff check .`)
 - **Type Check**: `mypy pydbzengine` (or `uv run mypy pydbzengine`)
-- **Test**: `pytest` (or `uv run pytest`)
+- **Test**: `pytest tests/unit` (unit tests) or `pytest` (or `uv run pytest`)

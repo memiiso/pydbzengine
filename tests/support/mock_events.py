@@ -27,3 +27,14 @@ class MockChangeEvent(ChangeEvent):
     def partition(self) -> int:
         """Returns the partition the record belongs to."""
         return self._partition
+
+
+def make_test_event(
+    dest: str, payload: str = "test", key: str = '{"id": 1}'
+) -> MockChangeEvent:
+    """Helper to construct a MockChangeEvent with default key and destination."""
+    return MockChangeEvent(
+        key=key,
+        value=payload,
+        destination=dest,
+    )

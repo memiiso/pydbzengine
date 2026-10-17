@@ -1,13 +1,12 @@
 import logging
 
-from base_postgresql import BasePostgresqlTest
-
 from pydbzengine import (
     BasePythonChangeHandler,
     ChangeEvent,
     DebeziumEngine,
 )
 from pydbzengine.helper import Utils
+from tests.support import BasePostgresqlTest
 
 
 class DummyChangeHandler(BasePythonChangeHandler):

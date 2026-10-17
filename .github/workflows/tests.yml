@@ -34,14 +34,28 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
           cache: 'pip' # caching pip dependencies
-      - name: Build & Install & Test
+      - name: Install dependencies
         run: |
           python3 --version
-          pip install coverage pylint pytest setuptools
+          pip install --upgrade pip setuptools
           python3 -m compileall -f pydbzengine
           pip install .[dev,dlt,iceberg]
+
+      - name: Lint and Type Check
+        run: |
           ruff check .
           ruff format --check .
-          python3 -m coverage run --source=pydbzengine -m pytest tests/
+          mypy pydbzengine
+
+      - name: Run Unit Tests
+        run: |
+          python3 -m coverage run --source=pydbzengine -m pytest tests/unit
+
+      - name: Run Integration Tests
+        run: |
+          python3 -m coverage run --append --source=pydbzengine -m pytest tests/integration
+
+      - name: Coverage Report
+        run: |
           python3 -m coverage report -m
 

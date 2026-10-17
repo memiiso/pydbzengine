@@ -81,6 +81,10 @@ fallback_version = "0.1.0"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["."]
+markers = [
+    "integration: marks tests requiring Docker containers and external services",
+]
 
 [tool.ruff]
 line-length = 88

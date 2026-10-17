@@ -1,21 +1,24 @@
 import os
+import tempfile
 import unittest
 from pathlib import Path
 
-from iceberg_catalog import IcebergCatalogContainer
-from minio_container import MinioContainer
-from postgres_container import PostgresDbHelper
+from tests.support.containers.iceberg import IcebergCatalogContainer
+from tests.support.containers.minio import MinioContainer
+from tests.support.containers.postgres import PostgresDbHelper
 
 
 class BasePostgresqlTest(unittest.TestCase):
-    CURRENT_DIR = Path(__file__).parent
-    OFFSET_FILE = CURRENT_DIR.joinpath("postgresql-offsets.dat")
+    OFFSET_FILE = (
+        Path(tempfile.gettempdir()) / "pydbzengine-test-postgresql-offsets.dat"
+    )
 
     @classmethod
     def setUpClass(cls):
         from pydbzengine.engine.jvm import ensure_jvm_started
 
-        ensure_jvm_started()
+        test_conf_dir = (Path(__file__).resolve().parents[1] / "config").as_posix()
+        ensure_jvm_started(extra_classpaths=[test_conf_dir])
         cls.postgres_db = PostgresDbHelper()
         cls.postgres_db.start()
 
@@ -24,8 +27,7 @@ class BasePostgresqlTest(unittest.TestCase):
         cls.postgres_db.stop()
 
     def debezium_engine_props_dict(self, unwrap_messages=True) -> dict:
-        current_dir = Path(__file__).parent
-        offset_file_path = current_dir.joinpath("postgresql-offsets.dat")
+        offset_file_path = self.OFFSET_FILE
 
         conf: dict = {}
         conf.setdefault("name", "engine")

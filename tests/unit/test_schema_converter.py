@@ -12,7 +12,6 @@ from typing import Any
 
 import pyarrow as pa
 import pyarrow.parquet as pq
-from mock_events import MockChangeEvent
 
 from pydbzengine.engine.base import BasePythonChangeHandler, ChangeEvent
 from pydbzengine.schema import (
@@ -28,6 +27,7 @@ from pydbzengine.schema import (
     decode_decimal,
     decode_variable_scale_decimal,
 )
+from tests.support import MockChangeEvent
 
 
 def make_envelope_event(

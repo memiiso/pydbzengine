@@ -3,14 +3,13 @@ from __future__ import annotations
 import json
 import unittest
 
-from mock_events import MockChangeEvent
-
 from pydbzengine.schema import (
     DebeziumConfig,
     EventFormat,
     EventStructure,
     SchemaConverter,
 )
+from tests.support import MockChangeEvent
 
 
 class TestDebeziumConfig(unittest.TestCase):
