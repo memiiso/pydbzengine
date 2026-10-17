@@ -21,27 +21,23 @@ from pydbzengine.schema.coercers import (
     make_variable_scale_decimal_coercer,
     scale_int_to_decimal,
 )
+from pydbzengine.schema.converter import SchemaConverter
 from pydbzengine.schema.models import (
     DebeziumConfig,
+    DeleteHandlingMode,
     EventFormat,
     EventStructure,
     SchemaDiff,
-    TableBatch,
     TableSchema,
-)
-from pydbzengine.schema.reader import (
-    BaseBatchChangeHandler,
-    SchemaBatchReader,
 )
 
 __all__ = [
-    "BaseBatchChangeHandler",
     "DebeziumConfig",
+    "DeleteHandlingMode",
     "EventFormat",
     "EventStructure",
-    "SchemaBatchReader",
+    "SchemaConverter",
     "SchemaDiff",
-    "TableBatch",
     "TableSchema",
     "coerce_binary",
     "coerce_date_iso",

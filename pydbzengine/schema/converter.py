@@ -2,16 +2,14 @@ from __future__ import annotations
 
 import json
 import uuid
-from abc import abstractmethod
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 from typing import Any, ClassVar
 
 import pyarrow as pa
 
-from pydbzengine.engine.base import BasePythonChangeHandler, ChangeEvent
+from pydbzengine.engine.base import ChangeEvent
 from pydbzengine.schema.coercers import (
     coerce_binary,
     coerce_date_iso,
@@ -32,43 +30,19 @@ from pydbzengine.schema.coercers import (
 )
 from pydbzengine.schema.models import (
     DebeziumConfig,
-    SchemaDiff,
-    TableBatch,
+    DeleteHandlingMode,
     TableSchema,
 )
 
 __all__ = [
-    "BaseBatchChangeHandler",
-    "SchemaBatchReader",
+    "SchemaConverter",
 ]
 
 
-@dataclass
-class _ActiveChunk:
-    destination: str
-    table_schema: TableSchema
-    rows: list[dict[str, Any]] = field(default_factory=list)
-    records: list[ChangeEvent] = field(default_factory=list)
-    schema_changed: bool = False
-    schema_diff: SchemaDiff | None = None
-
-    def to_batch(self) -> TableBatch:
-        return TableBatch(
-            destination=self.destination,
-            table_schema=self.table_schema,
-            arrow_table=pa.Table.from_pylist(
-                self.rows, schema=self.table_schema.arrow_schema
-            ),
-            schema_changed=self.schema_changed,
-            schema_diff=self.schema_diff,
-            records=tuple(self.records),
-        )
-
-
-class SchemaBatchReader:
+class SchemaConverter:
     """
-    Single-pass, schema-oriented reader that converts raw Debezium ChangeEvents
-    into strongly-typed TableBatches with automatic schema evolution tracking.
+    Stateless, schema-aware converter that extracts `TableSchema` descriptors,
+    coerces Debezium wire payloads into Python dicts, and builds PyArrow tables.
     """
 
     PRIMITIVE_ARROW_MAP: ClassVar[dict[str, pa.DataType]] = {
@@ -134,101 +108,169 @@ class SchemaBatchReader:
         config: DebeziumConfig | None = None,
         *,
         flatten: bool = True,
-        delete_handling_mode: str | None = None,
-        default_variable_scale: int = 10,
+        delete_handling_mode: DeleteHandlingMode | str | None = None,
+        default_variable_scale: int | None = None,
         strict_schemas: bool = False,
     ) -> None:
         self.config = config
         self.flatten = flatten
-        raw_delete_mode = (
+
+        raw_delete_mode: DeleteHandlingMode | str = (
             delete_handling_mode
             if delete_handling_mode is not None
-            else (config.delete_handling_mode if config is not None else "drop")
-        )
-        mode = raw_delete_mode.strip().lower()
-        if mode not in ("drop", "rewrite", "none"):
-            raise ValueError(
-                f"Invalid delete_handling_mode: {raw_delete_mode!r}. "
-                "Expected 'drop', 'rewrite', or 'none'."
+            else (
+                config.delete_handling_mode
+                if config is not None
+                else DeleteHandlingMode.DROP
             )
-        self.delete_handling_mode = mode
+        )
+        if isinstance(raw_delete_mode, DeleteHandlingMode):
+            self.delete_handling_mode = raw_delete_mode
+        else:
+            try:
+                self.delete_handling_mode = DeleteHandlingMode(
+                    raw_delete_mode.strip().lower()
+                )
+            except ValueError as err:
+                raise ValueError(
+                    f"Invalid delete_handling_mode: {raw_delete_mode!r}. "
+                    "Expected 'drop', 'rewrite', or 'none'."
+                ) from err
+
         self.default_variable_scale = (
-            config.default_variable_scale
-            if config is not None
-            else default_variable_scale
+            default_variable_scale
+            if default_variable_scale is not None
+            else (config.default_variable_scale if config is not None else 10)
         )
         self.strict_schemas = strict_schemas
         self._connect_schema_cache: dict[
-            tuple[str, bool, str],
+            tuple[str, bool, DeleteHandlingMode],
             tuple[dict[str, Any], tuple[str, ...], TableSchema],
         ] = {}
-        self._active_schemas: dict[str, TableSchema] = {}
 
-    def read_batch(self, records: Sequence[ChangeEvent]) -> list[TableBatch]:
+    def extract_event(
+        self,
+        record: ChangeEvent,
+        *,
+        previous_schema: TableSchema | None = None,
+    ) -> tuple[TableSchema, dict[str, Any]] | None:
         """
-        Reads a batch of Debezium ChangeEvent records in a single pass, converting them
-        into strongly-typed TableBatches with automatic schema evolution tracking.
+        Extracts `(table_schema, coerced_row)` from a single `ChangeEvent` in one pass.
+        Returns `None` for tombstones, heartbeats, DDL schema-change events, or dropped deletes.
         """
-        completed_batches: list[TableBatch] = []
-        active_chunks: dict[str, _ActiveChunk] = {}
+        parsed = self._parse_record(record, previous_schema=previous_schema)
+        if parsed is None:
+            return None
+        table_schema, row = parsed
+        if table_schema.row_coercers:
+            table_schema.coerce_row(row)
+        return table_schema, row
+
+    def extract_schema(
+        self,
+        record: ChangeEvent,
+        *,
+        previous_schema: TableSchema | None = None,
+    ) -> TableSchema | None:
+        """
+        Extracts or infers the `TableSchema` from a single `ChangeEvent`.
+        Returns `None` if the event has no data payload (tombstone, heartbeat, DDL event, or dropped delete).
+        """
+        parsed = self._parse_record(record, previous_schema=previous_schema)
+        if parsed is None:
+            return None
+        return parsed[0]
+
+    def extract_row(
+        self,
+        record: ChangeEvent,
+        *,
+        previous_schema: TableSchema | None = None,
+    ) -> dict[str, Any] | None:
+        """
+        Extracts and wire-coerces the row dictionary from a single `ChangeEvent`.
+        Returns `None` for tombstones, heartbeats, DDL schema-change events, or dropped deletes.
+        """
+        extracted = self.extract_event(record, previous_schema=previous_schema)
+        if extracted is None:
+            return None
+        return extracted[1]
+
+    def to_rows(
+        self,
+        records: Sequence[ChangeEvent],
+        *,
+        previous_schema: TableSchema | None = None,
+    ) -> tuple[TableSchema | None, list[dict[str, Any]]]:
+        """
+        Converts a sequence of `ChangeEvent` records into `(table_schema, coerced_rows)`.
+        If the schema widens or adds columns across `records`, the returned `TableSchema`
+        reflects the evolved union-by-name schema.
+        """
+        current_schema: TableSchema | None = previous_schema
+        rows: list[dict[str, Any]] = []
 
         for record in records:
-            parsed = self._parse_record_single_pass(record)
-            if parsed is None:
+            extracted = self.extract_event(record, previous_schema=current_schema)
+            if extracted is None:
                 continue
+            rec_schema, row = extracted
+            if current_schema is None:
+                current_schema = rec_schema
+            elif current_schema != rec_schema:
+                current_schema = current_schema.evolve(rec_schema)
+            rows.append(row)
 
-            destination, table_schema, row = parsed
+        return current_schema, rows
 
-            # Check if destination currently has an active chunk in this batch
-            current_chunk = active_chunks.get(destination)
-            if current_chunk is not None:
-                if current_chunk.table_schema.fingerprint != table_schema.fingerprint:
-                    # Mid-batch schema evolution: flush previous chunk in strict arrival order
-                    completed_batches.append(current_chunk.to_batch())
-                    diff = table_schema.diff_from(current_chunk.table_schema)
-                    self._active_schemas[destination] = table_schema
-                    current_chunk = _ActiveChunk(
-                        destination=destination,
-                        table_schema=table_schema,
-                        schema_changed=True,
-                        schema_diff=diff,
-                    )
-                    active_chunks[destination] = current_chunk
-            else:
-                prev_schema = self._active_schemas.get(destination)
-                schema_changed = (
-                    prev_schema is not None
-                    and prev_schema.fingerprint != table_schema.fingerprint
-                )
-                schema_diff = (
-                    table_schema.diff_from(prev_schema)
-                    if schema_changed and prev_schema is not None
-                    else None
-                )
-                self._active_schemas[destination] = table_schema
-                current_chunk = _ActiveChunk(
-                    destination=destination,
-                    table_schema=table_schema,
-                    schema_changed=schema_changed,
-                    schema_diff=schema_diff,
-                )
-                active_chunks[destination] = current_chunk
+    def to_arrow(
+        self,
+        records: Sequence[ChangeEvent],
+        *,
+        target_schema: pa.Schema | TableSchema | None = None,
+        previous_schema: TableSchema | None = None,
+    ) -> pa.Table | None:
+        """
+        Converts a sequence of `ChangeEvent` records into a PyArrow `pa.Table`.
+        If `target_schema` is provided, aligns the resulting table to `target_schema`.
+        Returns `None` if `records` yields no data rows.
+        """
+        table_schema, rows = self.to_rows(records, previous_schema=previous_schema)
+        if not rows or table_schema is None:
+            return None
+        return table_schema.to_arrow(rows, coerce=False, target_schema=target_schema)
 
-            if table_schema.row_coercers:
-                table_schema.coerce_row_in_place(row)
+    @staticmethod
+    def is_heartbeat(record: ChangeEvent) -> bool:
+        """Returns True if the record belongs to a Debezium heartbeat topic."""
+        raw_dest = record.destination()
+        destination = str(raw_dest).strip() if raw_dest is not None else ""
+        return destination.startswith("__debezium-heartbeat")
 
-            current_chunk.rows.append(row)
-            current_chunk.records.append(record)
+    @staticmethod
+    def is_schema_change_event(payload: Mapping[str, Any]) -> bool:
+        """Returns True if the payload is a Debezium DDL schema history event."""
+        return (
+            "ddl" in payload and "databaseName" in payload and "tableChanges" in payload
+        )
 
-        for chunk in active_chunks.values():
-            if chunk.rows:
-                completed_batches.append(chunk.to_batch())
+    @staticmethod
+    def _is_envelope_schema(schema_dict: Mapping[str, Any]) -> bool:
+        fields = schema_dict.get("fields")
+        if not isinstance(fields, list):
+            return False
+        return any(
+            isinstance(f, dict)
+            and f.get("field") in ("after", "before")
+            and f.get("type") == "struct"
+            for f in fields
+        )
 
-        return completed_batches
-
-    def _parse_record_single_pass(
-        self, record: ChangeEvent
-    ) -> tuple[str, TableSchema, dict[str, Any]] | None:
+    def _parse_record(
+        self,
+        record: ChangeEvent,
+        previous_schema: TableSchema | None = None,
+    ) -> tuple[TableSchema, dict[str, Any]] | None:
         raw_dest = record.destination()
         destination = str(raw_dest).strip() if raw_dest is not None else ""
         if not destination:
@@ -276,8 +318,6 @@ class SchemaBatchReader:
                 f"Expected JSON object in event for destination '{destination}', got {type(data).__name__}"
             )
 
-        primary_keys = tuple(self.extract_primary_keys(record))
-
         if "schema" in data and "payload" in data:
             top_schema = data["schema"]
             if not isinstance(top_schema, dict):
@@ -291,23 +331,20 @@ class SchemaBatchReader:
                 raise ValueError(
                     f"Expected dict 'payload' in event for destination '{destination}', got {type(payload).__name__}"
                 )
-            if self._is_schema_change_event(payload):
+            if self.is_schema_change_event(payload):
                 return None
+
+            primary_keys = tuple(self.extract_primary_keys(record))
             table_schema = self.compile_connect_schema(
                 destination=destination,
                 top_schema=top_schema,
                 primary_keys=primary_keys,
             )
-            has_env = any(
-                isinstance(f, dict)
-                and f.get("field") in ("after", "before")
-                and f.get("type") == "struct"
-                for f in top_schema["fields"]
-            )
+            has_env = self._is_envelope_schema(top_schema)
             row = self._extract_row_from_payload(payload, has_envelope_schema=has_env)
             if row is None:
                 return None
-            return destination, table_schema, row
+            return table_schema, row
 
         if self.strict_schemas:
             raise ValueError(
@@ -321,24 +358,28 @@ class SchemaBatchReader:
             if ("payload" in data and isinstance(data["payload"], dict))
             else data
         )
-        if self._is_schema_change_event(payload):
+        if self.is_schema_change_event(payload):
             return None
         row = self._extract_row_from_payload(payload, has_envelope_schema=False)
         if row is None:
             return None
 
+        primary_keys = tuple(self.extract_primary_keys(record))
         table_schema = self.infer_table_schema(
             destination=destination,
             row=row,
             primary_keys=primary_keys,
-            previous_schema=self._active_schemas.get(destination),
+            previous_schema=previous_schema,
         )
-        return destination, table_schema, row
+        return table_schema, row
 
     def _parse_java_connect_record(
         self, record: ChangeEvent, destination: str, j_val_schema: Any
-    ) -> tuple[str, TableSchema, dict[str, Any]] | None:
-        primary_keys = tuple(self.extract_primary_keys(record))
+    ) -> tuple[TableSchema, dict[str, Any]] | None:
+        raw_val = record.value()
+        if raw_val is None:
+            return None
+
         schema_dict = self._java_schema_to_dict(j_val_schema)
         field_names = {
             f.get("field") for f in schema_dict.get("fields", []) if isinstance(f, dict)
@@ -350,21 +391,14 @@ class SchemaBatchReader:
         ):
             return None
 
+        primary_keys = tuple(self.extract_primary_keys(record))
         table_schema = self.compile_connect_schema(
             destination=destination,
             top_schema=schema_dict,
             primary_keys=primary_keys,
         )
-        raw_val = record.value()
-        if raw_val is None:
-            return None
 
-        has_env = any(
-            isinstance(f, dict)
-            and f.get("field") in ("after", "before")
-            and f.get("type") == "struct"
-            for f in schema_dict.get("fields", [])
-        )
+        has_env = self._is_envelope_schema(schema_dict)
         is_deleted = False
         if self.flatten and has_env:
             if isinstance(raw_val, Mapping):
@@ -381,7 +415,10 @@ class SchemaBatchReader:
             if after is not None:
                 raw_val = after
             else:
-                if self.delete_handling_mode == "drop" or before is None:
+                if (
+                    self.delete_handling_mode == DeleteHandlingMode.DROP
+                    or before is None
+                ):
                     return None
                 raw_val = before
                 is_deleted = True
@@ -400,9 +437,13 @@ class SchemaBatchReader:
                 f"Unsupported Connect record value type {type(raw_val).__name__} for destination '{destination}'"
             )
 
-        if self.flatten and has_env and self.delete_handling_mode == "rewrite":
+        if (
+            self.flatten
+            and has_env
+            and self.delete_handling_mode == DeleteHandlingMode.REWRITE
+        ):
             row["__deleted"] = is_deleted
-        return destination, table_schema, row
+        return table_schema, row
 
     @classmethod
     def _unwrap_java_value(cls, val: Any) -> Any:
@@ -439,13 +480,6 @@ class SchemaBatchReader:
                 }
         return val
 
-    @staticmethod
-    def _is_schema_change_event(payload: Mapping[str, Any]) -> bool:
-        """Returns True if the payload is a Debezium DDL schema history event."""
-        return (
-            "ddl" in payload and "databaseName" in payload and "tableChanges" in payload
-        )
-
     def _extract_row_from_payload(
         self, payload: dict[str, Any], has_envelope_schema: bool
     ) -> dict[str, Any] | None:
@@ -470,11 +504,14 @@ class SchemaBatchReader:
                     f"Expected dict for envelope 'after', got {type(after).__name__}"
                 )
             row = dict(after)
-            if self.delete_handling_mode == "rewrite" and "__deleted" not in row:
+            if (
+                self.delete_handling_mode == DeleteHandlingMode.REWRITE
+                and "__deleted" not in row
+            ):
                 row["__deleted"] = False
             return row
 
-        if self.delete_handling_mode == "drop":
+        if self.delete_handling_mode == DeleteHandlingMode.DROP:
             return None
 
         before = payload.get("before")
@@ -484,7 +521,7 @@ class SchemaBatchReader:
                     f"Expected dict for envelope 'before', got {type(before).__name__}"
                 )
             row = dict(before)
-            if self.delete_handling_mode == "rewrite":
+            if self.delete_handling_mode == DeleteHandlingMode.REWRITE:
                 row["__deleted"] = True
             return row
         return None
@@ -518,19 +555,17 @@ class SchemaBatchReader:
 
         raw_fields = top_schema["fields"]
         unwrapped_envelope = False
-        if self.flatten:
+        if self.flatten and self._is_envelope_schema(top_schema):
             field_map = {f.get("field"): f for f in raw_fields if isinstance(f, dict)}
-            if "after" in field_map or "before" in field_map:
-                row_struct = (
-                    field_map["after"] if "after" in field_map else field_map["before"]
+            row_struct = (
+                field_map["after"] if "after" in field_map else field_map["before"]
+            )
+            if not isinstance(row_struct.get("fields"), list):
+                raise ValueError(
+                    "Debezium envelope missing struct 'fields' list in 'after'/'before'."
                 )
-                if row_struct.get("type") == "struct":
-                    if not isinstance(row_struct.get("fields"), list):
-                        raise ValueError(
-                            "Debezium envelope missing struct 'fields' list in 'after'/'before'."
-                        )
-                    raw_fields = row_struct["fields"]
-                    unwrapped_envelope = True
+            raw_fields = row_struct["fields"]
+            unwrapped_envelope = True
 
         pa_fields: list[pa.Field] = []
         coercers: list[tuple[str, Callable[[Any], Any]]] = []
@@ -548,7 +583,7 @@ class SchemaBatchReader:
         col_names = {f.name for f in pa_fields}
         if (
             unwrapped_envelope
-            and self.delete_handling_mode == "rewrite"
+            and self.delete_handling_mode == DeleteHandlingMode.REWRITE
             and "__deleted" not in col_names
         ):
             pa_fields.append(pa.field("__deleted", pa.bool_(), nullable=True))
@@ -618,9 +653,12 @@ class SchemaBatchReader:
         raw_field = field_def.get("field")
         field_name = str(raw_field) if raw_field is not None else ""
         raw_params = field_def.get("parameters")
-        params: Mapping[str, Any] = (
-            raw_params if isinstance(raw_params, Mapping) else {}
-        )
+        if raw_params is not None and not isinstance(raw_params, Mapping):
+            raise ValueError(
+                f"Expected Mapping for schema 'parameters' in field '{field_name}', "
+                f"got {type(raw_params).__name__}"
+            )
+        params: Mapping[str, Any] = raw_params if raw_params is not None else {}
 
         # 1. Logical Dates
         if type_name == "io.debezium.time.Date":
@@ -1010,17 +1048,26 @@ class SchemaBatchReader:
                 f"Unsupported CDC record key type {type(raw_key).__name__}: {raw_key!r}"
             )
 
-        if "schema" in key_data and isinstance(key_data["schema"], dict):
-            schema_fields = key_data["schema"].get("fields", [])
-            if not isinstance(schema_fields, list):
-                raise ValueError("Invalid key schema 'fields': expected list")
-            return [
-                f["field"]
-                for f in schema_fields
-                if isinstance(f, dict) and "field" in f
-            ]
-        if "payload" in key_data and isinstance(key_data["payload"], dict):
-            return list(key_data["payload"].keys())
+        if "schema" in key_data or "payload" in key_data:
+            key_schema = key_data.get("schema")
+            if isinstance(key_schema, dict) and "fields" in key_schema:
+                schema_fields = key_schema["fields"]
+                if not isinstance(schema_fields, list):
+                    raise ValueError("Invalid key schema 'fields': expected list")
+                return [
+                    f["field"]
+                    for f in schema_fields
+                    if isinstance(f, dict) and "field" in f
+                ]
+            key_payload = key_data.get("payload")
+            if key_payload is None:
+                return []
+            if not isinstance(key_payload, dict):
+                raise ValueError(
+                    f"Expected dict for key 'payload', got {type(key_payload).__name__}"
+                )
+            return list(key_payload.keys())
+
         return list(key_data.keys())
 
     def _java_schema_to_dict(self, j_schema: Any) -> dict[str, Any]:
@@ -1067,46 +1114,3 @@ class SchemaBatchReader:
             schema_def["values"] = self._java_schema_to_dict(val_schema)
 
         return schema_def
-
-
-class BaseBatchChangeHandler(BasePythonChangeHandler):
-    """
-    Schema-aware base change handler that reads incoming Debezium ChangeEvent batches
-    in a single pass via `SchemaBatchReader` and hands over strongly-typed `TableBatch`
-    objects to downstream implementations.
-    """
-
-    def __init__(
-        self,
-        config: DebeziumConfig | None = None,
-        reader: SchemaBatchReader | None = None,
-    ) -> None:
-        self.config = config
-        if reader is not None:
-            self.reader = reader
-        elif config is not None:
-            self.reader = config.create_batch_reader()
-        else:
-            self.reader = SchemaBatchReader()
-
-    def handleJsonBatch(self, records: list[ChangeEvent]) -> None:
-        """Converts raw Debezium records into TableBatches and dispatches them."""
-        self.log.info(f"Received {len(records)} records")
-        batches = self.reader.read_batch(records)
-        if batches:
-            self.handle_batches(batches)
-        self.log.info(f"Consumed {len(records)} records")
-
-    def handle_batches(self, batches: list[TableBatch]) -> None:
-        """
-        Processes all converted TableBatches in arrival order.
-        By default, dispatches each batch to `handle_table_batch(batch)`.
-        Subclasses (such as DltChangeHandler) may override this to process all batches together.
-        """
-        for batch in batches:
-            self.handle_table_batch(batch)
-
-    @abstractmethod
-    def handle_table_batch(self, batch: TableBatch) -> None:
-        """Handles a single strongly-typed TableBatch for one destination and schema version."""
-        raise NotImplementedError

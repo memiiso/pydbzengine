@@ -9,7 +9,7 @@ from pydbzengine.schema import (
     DebeziumConfig,
     EventFormat,
     EventStructure,
-    SchemaBatchReader,
+    SchemaConverter,
 )
 
 
@@ -25,7 +25,6 @@ class TestDebeziumConfig(unittest.TestCase):
         self.assertFalse(cfg.is_flattened)
         self.assertEqual(cfg.delete_handling_mode, "drop")
         self.assertEqual(cfg.default_variable_scale, 10)
-        self.assertTrue(cfg.tz_aware)
         self.assertEqual(cfg.connector_config, {})
 
     def test_from_dict_defaults(self) -> None:
@@ -96,7 +95,6 @@ class TestDebeziumConfig(unittest.TestCase):
             structure="flattened",
             schemas_enabled=False,
             default_variable_scale=4,
-            tz_aware=False,
         )
         self.assertEqual(cfg.format, EventFormat.CONNECT)
         self.assertTrue(cfg.is_connect)
@@ -104,13 +102,12 @@ class TestDebeziumConfig(unittest.TestCase):
         self.assertTrue(cfg.is_flattened)
         self.assertFalse(cfg.schemas_enabled)
         self.assertEqual(cfg.default_variable_scale, 4)
-        self.assertFalse(cfg.tz_aware)
 
-    def test_create_batch_reader_factory(self) -> None:
+    def test_create_converter_factory(self) -> None:
         cfg = DebeziumConfig(schemas_enabled=True, default_variable_scale=6)
-        reader = cfg.create_batch_reader()
-        self.assertIsInstance(reader, SchemaBatchReader)
-        self.assertEqual(reader.default_variable_scale, 6)
+        converter = cfg.create_converter()
+        self.assertIsInstance(converter, SchemaConverter)
+        self.assertEqual(converter.default_variable_scale, 6)
 
     def test_column_name_collision_immunity_with_flattened_config(self) -> None:
         payload = {
@@ -127,14 +124,13 @@ class TestDebeziumConfig(unittest.TestCase):
         )
 
         cfg_flat = DebeziumConfig(structure=EventStructure.FLATTENED)
-        reader = cfg_flat.create_batch_reader()
-        batches = reader.read_batch([rec])
-        self.assertEqual(len(batches), 1)
-        rows = batches[0].to_pylist()
-        self.assertEqual(len(rows), 1)
-        self.assertEqual(rows[0]["id"], 42)
-        self.assertEqual(rows[0]["before"], "historical_state")
-        self.assertEqual(rows[0]["after"], "current_state")
+        converter = cfg_flat.create_converter()
+        row = converter.extract_row(rec)
+        self.assertIsNotNone(row)
+        assert row is not None
+        self.assertEqual(row["id"], 42)
+        self.assertEqual(row["before"], "historical_state")
+        self.assertEqual(row["after"], "current_state")
 
     def test_invalid_config_raises(self) -> None:
         with self.assertRaises(ValueError):

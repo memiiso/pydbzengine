@@ -4,7 +4,7 @@ import subprocess
 import sys
 import unittest
 
-from pydbzengine.schema import BaseBatchChangeHandler
+from pydbzengine.engine.base import BasePythonChangeHandler
 
 
 class TestSchemaIsolationAndABCs(unittest.TestCase):
@@ -44,14 +44,15 @@ assert "jpype" not in sys.modules, "jpype was loaded during isinstance check!"
         )
         self.assertEqual(res.returncode, 0, msg=f"Process failed: {res.stderr}")
 
-    def test_abc_runtime_enforcement(self) -> None:
-        """Verifies that BaseBatchChangeHandler cannot be instantiated without implementing handle_table_batch."""
+    def test_base_handler_runtime_enforcement(self) -> None:
+        """Verifies that BasePythonChangeHandler raises NotImplementedError if neither handle_batch nor handleJsonBatch is overridden."""
 
-        class IncompleteBatchHandler(BaseBatchChangeHandler):
+        class IncompleteHandler(BasePythonChangeHandler):
             pass
 
-        with self.assertRaises(TypeError):
-            IncompleteBatchHandler()
+        handler = IncompleteHandler()
+        with self.assertRaises(NotImplementedError):
+            handler.handleJsonBatch([])
 
 
 if __name__ == "__main__":

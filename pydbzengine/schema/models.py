@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import Enum
 from functools import cached_property
@@ -10,18 +10,16 @@ from typing import TYPE_CHECKING, Any
 
 import pyarrow as pa
 import pyarrow.compute as pc
-import pyarrow.parquet as pq
 
 if TYPE_CHECKING:
-    from pydbzengine.engine.base import ChangeEvent
-    from pydbzengine.schema.reader import SchemaBatchReader
+    from pydbzengine.schema.converter import SchemaConverter
 
 __all__ = [
     "DebeziumConfig",
+    "DeleteHandlingMode",
     "EventFormat",
     "EventStructure",
     "SchemaDiff",
-    "TableBatch",
     "TableSchema",
 ]
 
@@ -30,7 +28,7 @@ __all__ = [
 class SchemaDiff:
     """
     Structured schema comparison result between an existing target schema
-    and an incoming CDC batch schema.
+    and an incoming CDC schema.
     """
 
     added_fields: tuple[pa.Field, ...] = ()
@@ -52,9 +50,9 @@ class SchemaDiff:
     def has_expansion(self) -> bool:
         """
         True if the target table schema needs to be expanded:
-        - New columns were added in the incoming batch.
+        - New columns were added in the incoming schema.
         - Existing column types changed/widened.
-        - A previously non-nullable target column became nullable in the incoming batch.
+        - A previously non-nullable target column became nullable in the incoming schema.
         """
         has_relaxed_nullability = any(
             not old_f.nullable and new_f.nullable
@@ -63,12 +61,15 @@ class SchemaDiff:
         return bool(self.added_fields or self.type_changes or has_relaxed_nullability)
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, eq=False)
 class TableSchema:
     """
-    Compiled, schema-aware descriptor for a CDC destination table.
+    Compiled, schema-aware domain descriptor for a CDC destination table.
     Combines a standard PyArrow Schema with primary keys, sparse value coercers,
-    and downstream schema evolution helpers.
+    and downstream schema evolution and table alignment operations.
+
+    Hashable and comparable by `fingerprint` so instances can be used as dictionary
+    keys when grouping records by schema version.
     """
 
     destination: str
@@ -100,9 +101,34 @@ class TableSchema:
         canonical_json = json.dumps(payload, sort_keys=True)
         return hashlib.sha256(canonical_json.encode("utf-8")).hexdigest()
 
+    def __eq__(self, other: object) -> bool:
+        if self is other:
+            return True
+        if not isinstance(other, TableSchema):
+            return NotImplemented
+        return self.fingerprint == other.fingerprint
+
+    def __hash__(self) -> int:
+        return hash(self.fingerprint)
+
     @property
     def column_names(self) -> list[str]:
         return self.arrow_schema.names
+
+    @property
+    def table_name(self) -> str:
+        return self.destination.rsplit(".", 1)[-1]
+
+    @property
+    def schema_name(self) -> str:
+        parts = self.destination.split(".")
+        return parts[-2] if len(parts) >= 2 else ""
+
+    @property
+    def namespace(self) -> str:
+        s = self.schema_name
+        t = self.table_name
+        return f"{s}.{t}" if s else t
 
     def field(self, name: str) -> pa.Field | None:
         idx = self.arrow_schema.get_field_index(name)
@@ -113,17 +139,37 @@ class TableSchema:
             return self.fingerprint == other.fingerprint
         return self.arrow_schema.equals(other)
 
-    def coerce_row_in_place(self, row: dict[str, Any]) -> dict[str, Any]:
-        """Mutates only the fields in `row` that require wire-format decoding."""
+    def coerce_row(self, row: dict[str, Any]) -> dict[str, Any]:
+        """Mutates only the fields in `row` that require wire-format decoding and returns `row`."""
         for col_name, coerce_fn in self.row_coercers:
             val = row.get(col_name)
             if val is not None:
                 row[col_name] = coerce_fn(val)
         return row
 
+    def to_arrow(
+        self,
+        rows: Sequence[dict[str, Any]],
+        *,
+        coerce: bool = True,
+        target_schema: pa.Schema | TableSchema | None = None,
+    ) -> pa.Table:
+        """
+        Converts a sequence of row dicts into a `pa.Table` typed with `self.arrow_schema`.
+        When `coerce=True`, applies sparse wire coercion in-place before building the Arrow table.
+        When `target_schema` is provided, aligns the resulting table to `target_schema`.
+        """
+        if coerce and self.row_coercers:
+            for row in rows:
+                self.coerce_row(row)
+        table = pa.Table.from_pylist(list(rows), schema=self.arrow_schema)
+        if target_schema is not None:
+            return self.align_table(table, target_schema)
+        return table
+
     def diff_from(self, target_schema: pa.Schema | TableSchema) -> SchemaDiff:
         """
-        Computes the exact structural difference from `target_schema` (old/target)
+        Computes the structural difference from `target_schema` (old/target)
         to `self.arrow_schema` (new/incoming).
         """
         old_pa = (
@@ -162,22 +208,23 @@ class TableSchema:
         """
         Non-destructively expands `target_schema` with new fields and widened types
         from `self.arrow_schema` (union-by-name semantics for Lakehouse / Parquet / Iceberg):
-        - Existing fields in target_schema keep their position.
-        - Fields removed in source become nullable in the expanded target schema.
-        - Widened types (e.g. int32 -> int64, float32 -> float64) are promoted.
-        - New fields in self.arrow_schema are appended as nullable.
+        - Existing fields in `target_schema` keep their position.
+        - Fields removed in `self` become nullable in the expanded target schema.
+        - Widened types (e.g. int32 -> int64, float32 -> float64, null -> T) are promoted.
+        - New fields in `self` are appended as nullable.
         """
         old_pa = (
             target_schema.arrow_schema
             if isinstance(target_schema, TableSchema)
             else target_schema
         )
-        new_map = {f.name: f for f in self.arrow_schema}
+        new_pa = self.arrow_schema
+
+        new_map = {f.name: f for f in new_pa}
         expanded_fields: list[pa.Field] = []
 
         for old_f in old_pa:
             if old_f.name not in new_map:
-                # Dropped in source: retain in target schema as nullable
                 expanded_fields.append(old_f.with_nullable(True))
             else:
                 new_f = new_map[old_f.name]
@@ -189,14 +236,125 @@ class TableSchema:
                 )
 
         existing_names = {f.name for f in old_pa}
-        for new_f in self.arrow_schema:
+        for new_f in new_pa:
             if new_f.name not in existing_names:
                 expanded_fields.append(new_f.with_nullable(True))
 
-        return pa.schema(expanded_fields, metadata=self.arrow_schema.metadata)
+        return pa.schema(expanded_fields, metadata=new_pa.metadata or old_pa.metadata)
 
-    @classmethod
-    def _normalize_type(cls, t: pa.DataType) -> pa.DataType:
+    def evolve(self, incoming: TableSchema) -> TableSchema:
+        """
+        Returns a new `TableSchema` that non-destructively expands `self` with
+        new fields, widened types, and row coercers from `incoming`.
+        """
+        if self == incoming:
+            return self
+        expanded_pa = incoming.expand_target_schema(self.arrow_schema)
+        merged_coercers = dict(self.row_coercers)
+        merged_coercers.update(incoming.row_coercers)
+        return TableSchema(
+            destination=incoming.destination,
+            arrow_schema=expanded_pa,
+            primary_keys=incoming.primary_keys or self.primary_keys,
+            row_coercers=tuple(merged_coercers.items()),
+        )
+
+    def align_table(
+        self,
+        table: pa.Table,
+        target_schema: pa.Schema | TableSchema | None = None,
+    ) -> pa.Table:
+        """
+        Aligns an Arrow `pa.Table` to match `target_schema` (or `self.arrow_schema` if omitted) in C++:
+        - Adds missing target columns as typed NULL arrays (e.g., dropped source columns).
+        - Casts columns (including nested structs and lists) whose types were widened in `target_schema`.
+        - Reorders columns to match `target_schema`.
+        """
+        resolved_target = target_schema if target_schema is not None else self
+        target_pa = (
+            resolved_target.arrow_schema
+            if isinstance(resolved_target, TableSchema)
+            else resolved_target
+        )
+        if table.schema.equals(target_pa):
+            return table
+
+        num_rows = table.num_rows
+        columns: list[pa.Array | pa.ChunkedArray] = []
+        src_names = set(table.schema.names)
+
+        for target_field in target_pa:
+            if target_field.name in src_names:
+                col = table.column(target_field.name)
+                columns.append(self._align_column(col, target_field.type, num_rows))
+            else:
+                columns.append(pa.nulls(num_rows, type=target_field.type))
+
+        return pa.Table.from_arrays(columns, schema=target_pa)
+
+    @staticmethod
+    def _align_column(
+        col: pa.Array | pa.ChunkedArray,
+        target_type: pa.DataType,
+        num_rows: int,
+    ) -> pa.Array | pa.ChunkedArray:
+        if col.type.equals(target_type):
+            return col
+        if pa.types.is_null(col.type):
+            return pa.nulls(num_rows, type=target_type)
+        if pa.types.is_struct(col.type) and pa.types.is_struct(target_type):
+            arr = col.combine_chunks() if isinstance(col, pa.ChunkedArray) else col
+            if len(arr) == 0:
+                return pa.nulls(0, type=target_type)
+            src_sub_names = {f.name for f in arr.type}
+            sub_arrays: list[pa.Array] = []
+            for sub_f in target_type:
+                if sub_f.name in src_sub_names:
+                    sub_col = arr.field(sub_f.name)
+                    aligned_sub = TableSchema._align_column(
+                        sub_col, sub_f.type, len(arr)
+                    )
+                    sub_arrays.append(
+                        aligned_sub.combine_chunks()
+                        if isinstance(aligned_sub, pa.ChunkedArray)
+                        else aligned_sub
+                    )
+                else:
+                    sub_arrays.append(pa.nulls(len(arr), type=sub_f.type))
+            return pa.StructArray.from_arrays(
+                sub_arrays,
+                fields=list(target_type),
+                mask=arr.is_null(),
+            )
+        if (pa.types.is_list(col.type) and pa.types.is_list(target_type)) or (
+            pa.types.is_large_list(col.type) and pa.types.is_large_list(target_type)
+        ):
+            arr = col.combine_chunks() if isinstance(col, pa.ChunkedArray) else col
+            if len(arr) == 0:
+                return pa.nulls(0, type=target_type)
+            aligned_vals = TableSchema._align_column(
+                arr.values, target_type.value_type, len(arr.values)
+            )
+            vals_arr = (
+                aligned_vals.combine_chunks()
+                if isinstance(aligned_vals, pa.ChunkedArray)
+                else aligned_vals
+            )
+            list_cls = (
+                pa.LargeListArray
+                if pa.types.is_large_list(target_type)
+                else pa.ListArray
+            )
+            return list_cls.from_arrays(
+                arr.offsets,
+                vals_arr,
+                type=target_type,
+                mask=arr.is_null(),
+            )
+        return pc.cast(col, target_type)
+
+    @staticmethod
+    def _normalize_type(t: pa.DataType) -> pa.DataType:
         """
         Normalizes Arrow large_string/large_binary/large_list variants (used by PyIceberg)
         to standard Arrow types so schema comparisons only report genuine type changes.
@@ -206,26 +364,28 @@ class TableSchema:
         if pa.types.is_large_binary(t):
             return pa.binary()
         if pa.types.is_large_list(t) or pa.types.is_list(t):
-            return pa.list_(cls._normalize_type(t.value_type))
+            return pa.list_(TableSchema._normalize_type(t.value_type))
         if pa.types.is_struct(t):
             return pa.struct(
                 [
-                    pa.field(f.name, cls._normalize_type(f.type), nullable=f.nullable)
+                    pa.field(
+                        f.name, TableSchema._normalize_type(f.type), nullable=f.nullable
+                    )
                     for f in t
                 ]
             )
         if pa.types.is_map(t):
             return pa.map_(
-                cls._normalize_type(t.key_type),
-                cls._normalize_type(t.item_type),
+                TableSchema._normalize_type(t.key_type),
+                TableSchema._normalize_type(t.item_type),
             )
         return t
 
-    @classmethod
-    def _promote_type(cls, old_t: pa.DataType, new_t: pa.DataType) -> pa.DataType:
+    @staticmethod
+    def _promote_type(old_t: pa.DataType, new_t: pa.DataType) -> pa.DataType:
         """Losslessly widens `old_t` and `new_t` or raises TypeError if incompatible."""
-        if old_t.equals(new_t) or cls._normalize_type(old_t).equals(
-            cls._normalize_type(new_t)
+        if old_t.equals(new_t) or TableSchema._normalize_type(old_t).equals(
+            TableSchema._normalize_type(new_t)
         ):
             return old_t
         if pa.types.is_null(old_t):
@@ -273,7 +433,7 @@ class TableSchema:
                     new_sub = new_sub_map[old_sub.name]
                     merged_sub.append(
                         old_sub.with_type(
-                            cls._promote_type(old_sub.type, new_sub.type)
+                            TableSchema._promote_type(old_sub.type, new_sub.type)
                         ).with_nullable(old_sub.nullable or new_sub.nullable)
                     )
             old_sub_names = {f.name for f in old_t}
@@ -284,7 +444,9 @@ class TableSchema:
         if (pa.types.is_list(old_t) or pa.types.is_large_list(old_t)) and (
             pa.types.is_list(new_t) or pa.types.is_large_list(new_t)
         ):
-            promoted_elem = cls._promote_type(old_t.value_type, new_t.value_type)
+            promoted_elem = TableSchema._promote_type(
+                old_t.value_type, new_t.value_type
+            )
             return (
                 pa.large_list(promoted_elem)
                 if pa.types.is_large_list(old_t)
@@ -292,171 +454,10 @@ class TableSchema:
             )
         if pa.types.is_map(old_t) and pa.types.is_map(new_t):
             return pa.map_(
-                cls._promote_type(old_t.key_type, new_t.key_type),
-                cls._promote_type(old_t.item_type, new_t.item_type),
+                TableSchema._promote_type(old_t.key_type, new_t.key_type),
+                TableSchema._promote_type(old_t.item_type, new_t.item_type),
             )
         raise TypeError(f"Cannot promote incompatible Arrow types: {old_t} -> {new_t}")
-
-
-@dataclass(frozen=True)
-class TableBatch:
-    """
-    Strongly-typed batch of CDC events for a single destination and schema version.
-    Carries both the converted Arrow Table and full schema management context.
-    """
-
-    destination: str
-    table_schema: TableSchema
-    arrow_table: pa.Table
-    schema_changed: bool = False
-    schema_diff: SchemaDiff | None = None
-    records: tuple[ChangeEvent, ...] = ()
-
-    @property
-    def schema(self) -> pa.Schema:
-        """The PyArrow Schema with exact column types, nullability, and field docs."""
-        return self.table_schema.arrow_schema
-
-    @property
-    def primary_keys(self) -> tuple[str, ...]:
-        return self.table_schema.primary_keys
-
-    @property
-    def num_rows(self) -> int:
-        return self.arrow_table.num_rows
-
-    @property
-    def table_name(self) -> str:
-        return self.destination.rsplit(".", 1)[-1]
-
-    @property
-    def schema_name(self) -> str:
-        parts = self.destination.split(".")
-        return parts[-2] if len(parts) >= 2 else ""
-
-    @property
-    def namespace(self) -> str:
-        s = self.schema_name
-        t = self.table_name
-        return f"{s}.{t}" if s else t
-
-    def diff_from(self, target_schema: pa.Schema | TableSchema) -> SchemaDiff:
-        """Compares this batch's schema against a downstream target table's schema."""
-        return self.table_schema.diff_from(target_schema)
-
-    def expand_target_schema(self, target_schema: pa.Schema | TableSchema) -> pa.Schema:
-        """Returns an expanded target `pa.Schema` incorporating any new/widened columns from this batch."""
-        return self.table_schema.expand_target_schema(target_schema)
-
-    def align_to(self, target_schema: pa.Schema | TableSchema) -> pa.Table:
-        """
-        Aligns this batch's Arrow Table to match `target_schema` in C++:
-        - Adds missing target columns as typed NULL arrays (e.g., dropped source columns).
-        - Casts columns (including nested structs and lists) whose types were widened in `target_schema`.
-        - Reorders columns to match `target_schema`.
-        """
-        target_pa = (
-            target_schema.arrow_schema
-            if isinstance(target_schema, TableSchema)
-            else target_schema
-        )
-        if self.arrow_table.schema.equals(target_pa):
-            return self.arrow_table
-
-        columns: list[pa.Array | pa.ChunkedArray] = []
-        src_names = set(self.arrow_table.schema.names)
-
-        for target_field in target_pa:
-            if target_field.name in src_names:
-                col = self.arrow_table.column(target_field.name)
-                columns.append(
-                    self._align_column(col, target_field.type, self.num_rows)
-                )
-            else:
-                columns.append(pa.nulls(self.num_rows, type=target_field.type))
-
-        return pa.Table.from_arrays(columns, schema=target_pa)
-
-    @classmethod
-    def _align_column(
-        cls,
-        col: pa.Array | pa.ChunkedArray,
-        target_type: pa.DataType,
-        num_rows: int,
-    ) -> pa.Array | pa.ChunkedArray:
-        if col.type.equals(target_type):
-            return col
-        if pa.types.is_null(col.type):
-            return pa.nulls(num_rows, type=target_type)
-        if pa.types.is_struct(col.type) and pa.types.is_struct(target_type):
-            arr = col.combine_chunks() if isinstance(col, pa.ChunkedArray) else col
-            if len(arr) == 0:
-                return pa.nulls(0, type=target_type)
-            src_sub_names = {f.name for f in arr.type}
-            sub_arrays: list[pa.Array] = []
-            for sub_f in target_type:
-                if sub_f.name in src_sub_names:
-                    sub_col = arr.field(sub_f.name)
-                    aligned_sub = cls._align_column(sub_col, sub_f.type, len(arr))
-                    sub_arrays.append(
-                        aligned_sub.combine_chunks()
-                        if isinstance(aligned_sub, pa.ChunkedArray)
-                        else aligned_sub
-                    )
-                else:
-                    sub_arrays.append(pa.nulls(len(arr), type=sub_f.type))
-            return pa.StructArray.from_arrays(
-                sub_arrays,
-                fields=list(target_type),
-                mask=arr.is_null(),
-            )
-        if (pa.types.is_list(col.type) and pa.types.is_list(target_type)) or (
-            pa.types.is_large_list(col.type) and pa.types.is_large_list(target_type)
-        ):
-            arr = col.combine_chunks() if isinstance(col, pa.ChunkedArray) else col
-            if len(arr) == 0:
-                return pa.nulls(0, type=target_type)
-            aligned_vals = cls._align_column(
-                arr.values, target_type.value_type, len(arr.values)
-            )
-            vals_arr = (
-                aligned_vals.combine_chunks()
-                if isinstance(aligned_vals, pa.ChunkedArray)
-                else aligned_vals
-            )
-            list_cls = (
-                pa.LargeListArray
-                if pa.types.is_large_list(target_type)
-                else pa.ListArray
-            )
-            return list_cls.from_arrays(
-                arr.offsets,
-                vals_arr,
-                type=target_type,
-                mask=arr.is_null(),
-            )
-        return pc.cast(col, target_type)
-
-    def to_arrow(self) -> pa.Table:
-        return self.arrow_table
-
-    def to_parquet(
-        self,
-        where: Any,
-        target_schema: pa.Schema | TableSchema | None = None,
-        **kwargs: Any,
-    ) -> None:
-        """Writes this batch (optionally aligned to `target_schema`) directly to Parquet."""
-        tbl = (
-            self.align_to(target_schema)
-            if target_schema is not None
-            else self.arrow_table
-        )
-        pq.write_table(tbl, where, **kwargs)
-
-    def to_pylist(self) -> list[dict[str, Any]]:
-        """Returns rows as Python dicts with native Python types (datetime, date, Decimal, bytes)."""
-        return self.arrow_table.to_pylist()
 
 
 class EventFormat(str, Enum):
@@ -473,6 +474,14 @@ class EventStructure(str, Enum):
     FLATTENED = "flattened"
 
 
+class DeleteHandlingMode(str, Enum):
+    """Delete handling strategy when flattening CDC envelope events."""
+
+    DROP = "drop"
+    REWRITE = "rewrite"
+    NONE = "none"
+
+
 @dataclass(frozen=True)
 class DebeziumConfig:
     """
@@ -482,11 +491,10 @@ class DebeziumConfig:
     format: EventFormat = EventFormat.JSON
     structure: EventStructure = EventStructure.ENVELOPE
     schemas_enabled: bool = True
-    delete_handling_mode: str = "drop"
+    delete_handling_mode: DeleteHandlingMode = DeleteHandlingMode.DROP
     topic_prefix: str = ""
     connector_type: str = ""
     default_variable_scale: int = 10
-    tz_aware: bool = True
     connector_config: dict[str, Any] = field(default_factory=dict, repr=False)
 
     @property
@@ -518,7 +526,6 @@ class DebeziumConfig:
         structure: EventStructure | str | None = None,
         schemas_enabled: bool | None = None,
         default_variable_scale: int = 10,
-        tz_aware: bool = True,
     ) -> DebeziumConfig:
         """
         Builds a DebeziumConfig from a connector configuration dictionary, automatically
@@ -532,7 +539,7 @@ class DebeziumConfig:
             else EventFormat(format.strip().lower())
         )
 
-        delete_mode = "drop"
+        delete_mode = DeleteHandlingMode.DROP
         if structure is not None:
             struct = (
                 structure
@@ -556,16 +563,18 @@ class DebeziumConfig:
                         f"transforms.{t_name}.delete.tombstone.handling.mode",
                         raw.get(f"transforms.{t_name}.delete.handling.mode", "drop"),
                     )
-                    delete_mode = str(raw_del_mode).strip().lower()
-                    if delete_mode == "rewrite-with-tombstone":
-                        delete_mode = "rewrite"
-                    elif delete_mode == "tombstone":
-                        delete_mode = "drop"
-                    if delete_mode not in ("drop", "rewrite", "none"):
+                    mode_str = str(raw_del_mode).strip().lower()
+                    if mode_str == "rewrite-with-tombstone":
+                        mode_str = "rewrite"
+                    elif mode_str == "tombstone":
+                        mode_str = "drop"
+                    try:
+                        delete_mode = DeleteHandlingMode(mode_str)
+                    except ValueError as err:
                         raise ValueError(
-                            f"Invalid delete.handling.mode: {delete_mode!r}. "
+                            f"Invalid delete.handling.mode: {mode_str!r}. "
                             "Expected 'drop', 'rewrite', or 'none'."
-                        )
+                        ) from err
                     break
 
         if schemas_enabled is not None:
@@ -623,17 +632,20 @@ class DebeziumConfig:
             topic_prefix=topic_prefix,
             connector_type=connector_type,
             default_variable_scale=default_variable_scale,
-            tz_aware=tz_aware,
             connector_config=raw,
         )
 
-    def create_batch_reader(self, flatten: bool = True) -> SchemaBatchReader:
-        """Instantiates a SchemaBatchReader configured for this DebeziumConfig."""
-        from pydbzengine.schema.reader import SchemaBatchReader
+    def create_converter(
+        self,
+        flatten: bool = True,
+        *,
+        strict_schemas: bool = False,
+    ) -> SchemaConverter:
+        """Instantiates a SchemaConverter configured for this DebeziumConfig."""
+        from pydbzengine.schema.converter import SchemaConverter
 
-        return SchemaBatchReader(
+        return SchemaConverter(
             config=self,
             flatten=flatten,
-            delete_handling_mode=self.delete_handling_mode,
-            default_variable_scale=self.default_variable_scale,
+            strict_schemas=strict_schemas,
         )

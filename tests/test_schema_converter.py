@@ -3,17 +3,21 @@ from __future__ import annotations
 import base64
 import datetime
 import json
+import tempfile
 import unittest
+from collections import defaultdict
 from decimal import Decimal
+from pathlib import Path
 from typing import Any
 
 import pyarrow as pa
+import pyarrow.parquet as pq
 from mock_events import MockChangeEvent
 
+from pydbzengine.engine.base import BasePythonChangeHandler, ChangeEvent
 from pydbzengine.schema import (
-    BaseBatchChangeHandler,
-    SchemaBatchReader,
-    TableBatch,
+    SchemaConverter,
+    TableSchema,
     coerce_binary,
     coerce_date_iso,
     coerce_time_iso,
@@ -74,11 +78,11 @@ def make_envelope_event(
     )
 
 
-class TestSchemaBatchReaderAndCoercers(unittest.TestCase):
+class TestSchemaConverterAndCoercers(unittest.TestCase):
     def setUp(self) -> None:
-        self.reader = SchemaBatchReader()
+        self.converter = SchemaConverter()
 
-    def test_debezium_envelope_to_arrow_and_pylist(self) -> None:
+    def test_debezium_envelope_extraction_and_to_arrow(self) -> None:
         salary_b64 = base64.b64encode(
             (19995).to_bytes(4, byteorder="big", signed=True)
         ).decode("ascii")
@@ -146,16 +150,15 @@ class TestSchemaBatchReaderAndCoercers(unittest.TestCase):
             },
         )
 
-        batches = self.reader.read_batch([rec])
-        self.assertEqual(len(batches), 1)
-        batch = batches[0]
-        self.assertEqual(batch.destination, "inventory.customers")
-        self.assertEqual(batch.primary_keys, ("id",))
-        self.assertFalse(batch.schema_changed)
-        self.assertIsNone(batch.schema_diff)
+        extracted = self.converter.extract_event(rec)
+        self.assertIsNotNone(extracted)
+        assert extracted is not None
+        table_schema, row = extracted
+        self.assertEqual(table_schema.destination, "inventory.customers")
+        self.assertEqual(table_schema.primary_keys, ("id",))
 
         # Verify exact PyArrow schema types & field metadata
-        pa_schema = batch.schema
+        pa_schema = table_schema.arrow_schema
         self.assertEqual(pa_schema.field("id").type, pa.int32())
         self.assertFalse(pa_schema.field("id").nullable)
         self.assertEqual(pa_schema.field("id").metadata[b"doc"], b"Customer PK")
@@ -168,25 +171,26 @@ class TestSchemaBatchReaderAndCoercers(unittest.TestCase):
         self.assertEqual(pa_schema.field("account_id").type, pa.string())
 
         # Verify sparse row_coercers: only updated_at and salary require Python coercion!
-        coerced_cols = [c for c, _ in batch.table_schema.row_coercers]
+        coerced_cols = [c for c, _ in table_schema.row_coercers]
         self.assertEqual(coerced_cols, ["updated_at", "salary"])
 
-        # Verify converted values via to_pylist()
-        rows = batch.to_pylist()
+        # Verify converted values via table_schema.to_arrow([row]) -> to_pylist()
+        pa_table = table_schema.to_arrow([row])
+        rows = pa_table.to_pylist()
         self.assertEqual(len(rows), 1)
-        row = rows[0]
-        self.assertEqual(row["id"], 1001)
-        self.assertEqual(row["name"], "Sally")
-        self.assertEqual(row["birth_date"], datetime.date(2020, 1, 1))
-        self.assertEqual(row["created_at"], datetime.datetime(2021, 5, 3, 0, 0))
+        out_row = rows[0]
+        self.assertEqual(out_row["id"], 1001)
+        self.assertEqual(out_row["name"], "Sally")
+        self.assertEqual(out_row["birth_date"], datetime.date(2020, 1, 1))
+        self.assertEqual(out_row["created_at"], datetime.datetime(2021, 5, 3, 0, 0))
         self.assertEqual(
-            row["updated_at"],
+            out_row["updated_at"],
             datetime.datetime(2024, 5, 5, 14, 30, 0, tzinfo=datetime.timezone.utc),
         )
-        self.assertEqual(row["salary"], Decimal("199.95"))
-        self.assertEqual(row["account_id"], "c9a646d3-9c61-4073-8946-f94d93d3b762")
+        self.assertEqual(out_row["salary"], Decimal("199.95"))
+        self.assertEqual(out_row["account_id"], "c9a646d3-9c61-4073-8946-f94d93d3b762")
 
-    def test_mid_batch_and_cross_batch_schema_evolution(self) -> None:
+    def test_composable_schema_grouping_and_evolution(self) -> None:
         v1_fields = [
             {"type": "int32", "optional": False, "field": "id"},
             {"type": "int32", "optional": True, "field": "amount"},
@@ -206,26 +210,40 @@ class TestSchemaBatchReaderAndCoercers(unittest.TestCase):
             ),
         ]
 
-        batches = self.reader.read_batch(records)
-        self.assertEqual(len(batches), 2)
+        # 1. End-user can group by TableSchema directly because TableSchema is hashable
+        grouped: dict[TableSchema, list[dict[str, Any]]] = defaultdict(list)
+        for r in records:
+            extracted = self.converter.extract_event(r)
+            if extracted is not None:
+                s, row = extracted
+                grouped[s].append(row)
 
-        # Batch 0: V1 (2 rows)
-        self.assertEqual(batches[0].num_rows, 2)
-        self.assertFalse(batches[0].schema_changed)
-        self.assertIsNone(batches[0].schema_diff)
-        self.assertEqual(batches[0].schema.names, ["id", "amount"])
+        self.assertEqual(len(grouped), 2)
+        schemas = list(grouped.keys())
+        self.assertEqual(len(grouped[schemas[0]]), 2)
+        self.assertEqual(len(grouped[schemas[1]]), 1)
 
-        # Batch 1: V2 (1 row, schema_changed=True, schema_diff attached)
-        self.assertEqual(batches[1].num_rows, 1)
-        self.assertTrue(batches[1].schema_changed)
-        self.assertIsNotNone(batches[1].schema_diff)
-        diff = batches[1].schema_diff
-        assert diff is not None
+        diff = schemas[1].diff_from(schemas[0])
         self.assertTrue(diff.has_expansion)
         self.assertEqual([f.name for f in diff.added_fields], ["discount_code"])
         self.assertEqual(len(diff.type_changes), 1)
         self.assertEqual(diff.type_changes[0][0].type, pa.int32())
         self.assertEqual(diff.type_changes[0][1].type, pa.int64())
+
+        # 2. Or convert all records together via to_arrow() which widens/expands automatically
+        unified_table = self.converter.to_arrow(records)
+        self.assertIsNotNone(unified_table)
+        assert unified_table is not None
+        self.assertEqual(unified_table.num_rows, 3)
+        self.assertEqual(unified_table.schema.field("amount").type, pa.int64())
+        self.assertEqual(
+            unified_table.to_pylist(),
+            [
+                {"id": 1, "amount": 100, "discount_code": None},
+                {"id": 2, "amount": 200, "discount_code": None},
+                {"id": 3, "amount": 300, "discount_code": "SAVE10"},
+            ],
+        )
 
     def test_all_debezium_logical_types_and_complex_types(self) -> None:
         vardec_b64 = base64.b64encode(
@@ -329,9 +347,10 @@ class TestSchemaBatchReaderAndCoercers(unittest.TestCase):
                 "f_tags": ["a", "b"],
             },
         )
-        batches = self.reader.read_batch([rec])
-        self.assertEqual(len(batches), 1)
-        row = batches[0].to_pylist()[0]
+        pa_table = self.converter.to_arrow([rec])
+        self.assertIsNotNone(pa_table)
+        assert pa_table is not None
+        row = pa_table.to_pylist()[0]
         self.assertEqual(row["f_isodate"], datetime.date(2024, 5, 5))
         self.assertEqual(row["f_isotime"], datetime.time(4, 5, 11))
         self.assertEqual(row["f_microtime"], datetime.time(4, 5, 11))
@@ -433,7 +452,6 @@ class TestSchemaBatchReaderAndCoercers(unittest.TestCase):
 
         class MockStruct:
             def get(self, name: str) -> Any:
-                # Simulates Connect Struct.get() substituting schema default for null
                 return {
                     "id": 7,
                     "amount": "12.50",
@@ -461,11 +479,12 @@ class TestSchemaBatchReaderAndCoercers(unittest.TestCase):
                 return KS()
 
         rec = ConnectRecord(key=None, value=MockStruct(), destination="connect.orders")
-        batches = self.reader.read_batch([rec])
-        self.assertEqual(len(batches), 1)
-        self.assertEqual(batches[0].primary_keys, ("id",))
+        schema, rows = self.converter.to_rows([rec])
+        self.assertIsNotNone(schema)
+        assert schema is not None
+        self.assertEqual(schema.primary_keys, ("id",))
         self.assertEqual(
-            batches[0].to_pylist(),
+            rows,
             [
                 {
                     "id": 7,
@@ -520,43 +539,41 @@ class TestSchemaBatchReaderAndCoercers(unittest.TestCase):
         with self.assertRaises(TypeError):
             coerce_time_ns("not_an_int")
 
-    def test_strict_reader_errors_on_unexpected_inputs(self) -> None:
+    def test_strict_converter_errors_on_unexpected_inputs(self) -> None:
         # Missing destination raises ValueError
         with self.assertRaises(ValueError):
-            self.reader.read_batch(
-                [MockChangeEvent(key="{}", value="{}", destination="")]
+            self.converter.extract_event(
+                MockChangeEvent(key="{}", value="{}", destination="")
             )
 
         # Non-object JSON value raises ValueError
         with self.assertRaises(ValueError):
-            self.reader.read_batch(
-                [MockChangeEvent(key="{}", value="[1, 2, 3]", destination="t")]
+            self.converter.extract_event(
+                MockChangeEvent(key="{}", value="[1, 2, 3]", destination="t")
             )
 
         # Non-JSON or non-object key raises ValueError
         with self.assertRaises(ValueError):
-            self.reader.read_batch(
-                [
-                    MockChangeEvent(
-                        key="plain_string_key", value='{"id": 1}', destination="t"
-                    )
-                ]
+            self.converter.extract_event(
+                MockChangeEvent(
+                    key="plain_string_key", value='{"id": 1}', destination="t"
+                )
             )
         with self.assertRaises(ValueError):
-            self.reader.read_batch(
-                [MockChangeEvent(key="123", value='{"id": 1}', destination="t")]
+            self.converter.extract_event(
+                MockChangeEvent(key="123", value='{"id": 1}', destination="t")
             )
 
         # Unsupported Connect type raises ValueError
         with self.assertRaises(ValueError):
-            self.reader.compile_connect_schema(
+            self.converter.compile_connect_schema(
                 "t",
                 {"type": "struct", "fields": [{"type": "unknown_type", "field": "x"}]},
             )
 
         # Invalid Decimal precision > 38 raises ValueError
         with self.assertRaises(ValueError):
-            self.reader.compile_connect_schema(
+            self.converter.compile_connect_schema(
                 "t",
                 {
                     "type": "struct",
@@ -574,68 +591,55 @@ class TestSchemaBatchReaderAndCoercers(unittest.TestCase):
                 },
             )
 
-    def test_base_batch_change_handler_dispatch(self) -> None:
-        received: list[TableBatch] = []
-
-        class CollectingHandler(BaseBatchChangeHandler):
-            def handle_table_batch(self, batch: TableBatch) -> None:
-                received.append(batch)
-
-        handler = CollectingHandler()
-        rec1 = MockChangeEvent(
-            key='{"id": 1}',
-            value='{"id": 1, "name": "Alice"}',
-            destination="inventory.users",
-        )
-        rec2 = MockChangeEvent(
-            key='{"id": 2}',
-            value=None,  # tombstone skipped
-            destination="inventory.users",
-        )
-        handler.handleJsonBatch([rec1, rec2])
-        self.assertEqual(len(received), 1)
-        self.assertEqual(received[0].num_rows, 1)
-        self.assertEqual(received[0].to_pylist(), [{"id": 1, "name": "Alice"}])
-
-    def test_downstream_lakehouse_and_parquet_handlers_via_base_batch_handler(
-        self,
-    ) -> None:
-        import tempfile
-        from pathlib import Path
-
-        import pyarrow.parquet as pq
-
-        class LakehouseParquetHandler(BaseBatchChangeHandler):
+    def test_end_user_handler_composing_puzzle_pieces(self) -> None:
+        class LakehouseParquetHandler(BasePythonChangeHandler):
             def __init__(self, base_dir: Path) -> None:
-                super().__init__()
                 self.base_dir = base_dir
+                self.converter = SchemaConverter()
                 self.target_schemas: dict[str, pa.Schema] = {}
                 self.written_files: list[Path] = []
                 self.ddl_events: list[str] = []
 
-            def handle_table_batch(self, batch: TableBatch) -> None:
-                dest = batch.destination
-                if dest not in self.target_schemas:
-                    self.target_schemas[dest] = batch.schema
-                else:
-                    diff = batch.diff_from(self.target_schemas[dest])
-                    if diff.has_expansion:
-                        for f in diff.added_fields:
-                            self.ddl_events.append(f"ADD {f.name} {f.type}")
-                        for old_f, new_f in diff.type_changes:
-                            self.ddl_events.append(
-                                f"WIDEN {old_f.name} {old_f.type}->{new_f.type}"
-                            )
-                        self.target_schemas[dest] = batch.expand_target_schema(
-                            self.target_schemas[dest]
-                        )
+            def handle_batch(self, records: list[ChangeEvent]) -> int | None:
+                for dest, table_records in self.group_by_destination(records).items():
+                    # Group by schema version using hashable TableSchema
+                    by_schema: dict[TableSchema, list[dict[str, Any]]] = defaultdict(
+                        list
+                    )
+                    for r in table_records:
+                        extracted = self.converter.extract_event(r)
+                        if extracted is not None:
+                            s, row = extracted
+                            by_schema[s].append(row)
 
-                out_file = (
-                    self.base_dir
-                    / f"{batch.table_name}_{len(self.written_files)}.parquet"
-                )
-                batch.to_parquet(out_file, target_schema=self.target_schemas[dest])
-                self.written_files.append(out_file)
+                    for schema, rows in by_schema.items():
+                        if dest not in self.target_schemas:
+                            self.target_schemas[dest] = schema.arrow_schema
+                        else:
+                            diff = schema.diff_from(self.target_schemas[dest])
+                            if diff.has_expansion:
+                                for f in diff.added_fields:
+                                    self.ddl_events.append(f"ADD {f.name} {f.type}")
+                                for old_f, new_f in diff.type_changes:
+                                    self.ddl_events.append(
+                                        f"WIDEN {old_f.name} {old_f.type}->{new_f.type}"
+                                    )
+                                self.target_schemas[dest] = schema.expand_target_schema(
+                                    self.target_schemas[dest]
+                                )
+
+                        aligned = schema.to_arrow(
+                            rows,
+                            coerce=False,
+                            target_schema=self.target_schemas[dest],
+                        )
+                        out_file = (
+                            self.base_dir
+                            / f"{schema.table_name}_{len(self.written_files)}.parquet"
+                        )
+                        pq.write_table(aligned, out_file)
+                        self.written_files.append(out_file)
+                return len(records)
 
         with tempfile.TemporaryDirectory() as tmpdir:
             handler = LakehouseParquetHandler(Path(tmpdir))
@@ -709,7 +713,6 @@ class TestSchemaBatchReaderAndCoercers(unittest.TestCase):
             )
 
     def test_debezium_server_iceberg_parity_cases(self) -> None:
-        # 1. Decimal missing parameters defaults to (38, 10) and rounds excess scale HALF_UP
         fields = [
             {"type": "int32", "optional": False, "field": "id"},
             {
@@ -740,7 +743,6 @@ class TestSchemaBatchReaderAndCoercers(unittest.TestCase):
 
         class MockJavaUtilDate:
             def getTime(self) -> int:
-                # 2022-05-06T00:00:00Z in epoch milliseconds (19118 days * 86400000)
                 return 19118 * 86_400_000
 
         self.assertEqual(coerce_date_iso(MockJavaUtilDate()), 19118)
@@ -755,10 +757,8 @@ class TestSchemaBatchReaderAndCoercers(unittest.TestCase):
                 "connect_date": 19118,
                 "__source_ts_ns": 1620000000123456789,
             },
-            # Extra key field 'tenant_db' (as added by ByLogicalTableRouter) not in value schema
             key={"id": 1, "tenant_db": "t1"},
         )
-        # Heartbeat event and DDL schema-change event should be skipped
         heartbeat_rec = MockChangeEvent(
             key='{"id": 1}',
             value='{"ts_ms": 1620000000000}',
@@ -776,20 +776,23 @@ class TestSchemaBatchReaderAndCoercers(unittest.TestCase):
             destination="inventory",
         )
 
-        batches = self.reader.read_batch([heartbeat_rec, ddl_rec, rec])
-        self.assertEqual(len(batches), 1)
-        batch = batches[0]
-        self.assertEqual(batch.primary_keys, ("id",))
+        schema, rows = self.converter.to_rows([heartbeat_rec, ddl_rec, rec])
+        self.assertIsNotNone(schema)
+        assert schema is not None
+        self.assertEqual(schema.primary_keys, ("id",))
         self.assertEqual(
-            batch.schema.field("dec_no_params").type, pa.decimal128(38, 10)
+            schema.arrow_schema.field("dec_no_params").type, pa.decimal128(38, 10)
         )
-        self.assertEqual(batch.schema.field("dec_rounded").type, pa.decimal128(5, 2))
         self.assertEqual(
-            batch.schema.field("__source_ts_ns").type,
+            schema.arrow_schema.field("dec_rounded").type, pa.decimal128(5, 2)
+        )
+        self.assertEqual(
+            schema.arrow_schema.field("__source_ts_ns").type,
             pa.timestamp("us", tz="UTC"),
         )
+        pa_table = schema.to_arrow(rows, coerce=False)
         self.assertEqual(
-            batch.to_pylist(),
+            pa_table.to_pylist(),
             [
                 {
                     "id": 1,
@@ -805,7 +808,7 @@ class TestSchemaBatchReaderAndCoercers(unittest.TestCase):
 
         # Map key cannot be nested type (struct/array/map)
         with self.assertRaises(ValueError):
-            self.reader.compile_connect_schema(
+            self.converter.compile_connect_schema(
                 "inventory.bad_map",
                 {
                     "type": "struct",
@@ -822,7 +825,7 @@ class TestSchemaBatchReaderAndCoercers(unittest.TestCase):
 
         # Array / Map field cannot be part of primary key
         with self.assertRaises(ValueError):
-            self.reader.compile_connect_schema(
+            self.converter.compile_connect_schema(
                 "inventory.bad_pk",
                 {
                     "type": "struct",
@@ -856,19 +859,20 @@ class TestSchemaBatchReaderAndCoercers(unittest.TestCase):
             op="d",
         )
 
-        # 1. Default delete_handling_mode="drop": delete event is dropped, not resurrected
-        reader_drop = SchemaBatchReader(delete_handling_mode="drop")
-        batches_drop = reader_drop.read_batch([create_rec, delete_rec])
-        self.assertEqual(len(batches_drop), 1)
-        self.assertEqual(batches_drop[0].to_pylist(), [{"id": 1, "name": "Alice"}])
+        # 1. Default delete_handling_mode="drop": delete event returns None
+        conv_drop = SchemaConverter(delete_handling_mode="drop")
+        self.assertIsNone(conv_drop.extract_row(delete_rec))
+        _, rows_drop = conv_drop.to_rows([create_rec, delete_rec])
+        self.assertEqual(rows_drop, [{"id": 1, "name": "Alice"}])
 
         # 2. delete_handling_mode="rewrite": adds __deleted boolean column
-        reader_rewrite = SchemaBatchReader(delete_handling_mode="rewrite")
-        batches_rewrite = reader_rewrite.read_batch([create_rec, delete_rec])
-        self.assertEqual(len(batches_rewrite), 1)
-        self.assertEqual(batches_rewrite[0].schema.field("__deleted").type, pa.bool_())
+        conv_rewrite = SchemaConverter(delete_handling_mode="rewrite")
+        schema_rw, rows_rw = conv_rewrite.to_rows([create_rec, delete_rec])
+        self.assertIsNotNone(schema_rw)
+        assert schema_rw is not None
+        self.assertEqual(schema_rw.arrow_schema.field("__deleted").type, pa.bool_())
         self.assertEqual(
-            batches_rewrite[0].to_pylist(),
+            rows_rw,
             [
                 {"id": 1, "name": "Alice", "__deleted": False},
                 {"id": 1, "name": "Alice", "__deleted": True},
@@ -876,10 +880,8 @@ class TestSchemaBatchReaderAndCoercers(unittest.TestCase):
         )
 
         # 3. delete_handling_mode="none": passes before state through
-        reader_none = SchemaBatchReader(delete_handling_mode="none")
-        batches_none = reader_none.read_batch([delete_rec])
-        self.assertEqual(len(batches_none), 1)
-        self.assertEqual(batches_none[0].to_pylist(), [{"id": 1, "name": "Alice"}])
+        conv_none = SchemaConverter(delete_handling_mode="none")
+        self.assertEqual(conv_none.extract_row(delete_rec), {"id": 1, "name": "Alice"})
 
         # 4. Schemaless Java Struct / Map key extraction
         class MockJavaMapKey:
@@ -892,7 +894,7 @@ class TestSchemaBatchReaderAndCoercers(unittest.TestCase):
             destination="inventory.orgs",
         )
         self.assertEqual(
-            SchemaBatchReader.extract_primary_keys(map_key_rec),
+            SchemaConverter.extract_primary_keys(map_key_rec),
             ["id", "org_id"],
         )
 

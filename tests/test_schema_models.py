@@ -10,14 +10,13 @@ import pyarrow.parquet as pq
 
 from pydbzengine.schema import (
     SchemaDiff,
-    TableBatch,
     TableSchema,
     make_decimal_coercer,
 )
 
 
 class TestSchemaModels(unittest.TestCase):
-    def test_table_schema_fingerprint_determinism(self) -> None:
+    def test_table_schema_fingerprint_and_hashability(self) -> None:
         pa_s1 = pa.schema(
             [
                 pa.field(
@@ -54,9 +53,15 @@ class TestSchemaModels(unittest.TestCase):
 
         self.assertTrue(schema1.same_schema(schema2))
         self.assertTrue(schema1.same_schema(pa_s2))
+        self.assertEqual(schema1, schema2)
+        self.assertEqual(hash(schema1), hash(schema2))
+        self.assertEqual(len({schema1, schema2}), 1)
         self.assertEqual(schema1.fingerprint, schema2.fingerprint)
         self.assertGreater(len(schema1.fingerprint), 20)
         self.assertEqual(schema1.column_names, ["id", "name"])
+        self.assertEqual(schema1.table_name, "customers")
+        self.assertEqual(schema1.schema_name, "inventory")
+        self.assertEqual(schema1.namespace, "inventory.customers")
         self.assertIsNotNone(schema1.field("id"))
         self.assertIsNone(schema1.field("unknown"))
 
@@ -80,6 +85,7 @@ class TestSchemaModels(unittest.TestCase):
             arrow_schema=pa.schema([pa.field("content", pa.string())]),
         )
         self.assertNotEqual(s1.fingerprint, s2.fingerprint)
+        self.assertNotEqual(s1, s2)
         self.assertFalse(s1.same_schema(s2))
 
     def test_schema_diff_added_removed_widened_nullability(self) -> None:
@@ -107,6 +113,7 @@ class TestSchemaModels(unittest.TestCase):
         )
 
         diff: SchemaDiff = incoming.diff_from(target)
+        self.assertEqual(diff, incoming.diff_from(target.arrow_schema))
         self.assertTrue(diff.has_changes)
         self.assertTrue(diff.has_expansion)
         self.assertEqual([f.name for f in diff.added_fields], ["discount"])
@@ -132,6 +139,12 @@ class TestSchemaModels(unittest.TestCase):
                 ),
             ]
         )
+        target_ts = TableSchema(
+            destination="orders",
+            arrow_schema=target_pa,
+            primary_keys=("id",),
+            row_coercers=(("price", make_decimal_coercer(2)),),
+        )
         incoming = TableSchema(
             destination="orders",
             arrow_schema=pa.schema(
@@ -152,9 +165,14 @@ class TestSchemaModels(unittest.TestCase):
                     pa.field("new_col", pa.string(), nullable=False),
                 ]
             ),
+            row_coercers=(("price", make_decimal_coercer(4)),),
         )
 
         expanded = incoming.expand_target_schema(target_pa)
+        evolved = target_ts.evolve(incoming)
+        self.assertEqual(evolved.arrow_schema, expanded)
+        self.assertEqual(evolved.primary_keys, ("id",))
+        self.assertEqual([c for c, _ in evolved.row_coercers], ["price"])
         self.assertEqual(
             expanded.names,
             ["id", "dropped_col", "count", "ratio", "price", "owner", "new_col"],
@@ -174,7 +192,7 @@ class TestSchemaModels(unittest.TestCase):
         # New top-level column appended as nullable
         self.assertTrue(expanded.field("new_col").nullable)
 
-    def test_table_batch_align_to_and_parquet_roundtrip(self) -> None:
+    def test_table_schema_to_arrow_align_table_and_parquet_roundtrip(self) -> None:
         incoming_schema = TableSchema(
             destination="dbserver1.inventory.orders",
             arrow_schema=pa.schema(
@@ -188,20 +206,8 @@ class TestSchemaModels(unittest.TestCase):
             row_coercers=(("price", make_decimal_coercer(2)),),
         )
         row = {"id": 1, "price": "19.99", "new_col": "v2"}
-        incoming_schema.coerce_row_in_place(row)
-
-        tbl = pa.Table.from_pylist([row], schema=incoming_schema.arrow_schema)
-        batch = TableBatch(
-            destination="dbserver1.inventory.orders",
-            table_schema=incoming_schema,
-            arrow_table=tbl,
-        )
-
-        self.assertEqual(batch.table_name, "orders")
-        self.assertEqual(batch.schema_name, "inventory")
-        self.assertEqual(batch.namespace, "inventory.orders")
-        self.assertEqual(batch.primary_keys, ("id",))
-        self.assertEqual(batch.num_rows, 1)
+        tbl = incoming_schema.to_arrow([row])
+        self.assertEqual(tbl.num_rows, 1)
 
         target_schema = pa.schema(
             [
@@ -212,7 +218,7 @@ class TestSchemaModels(unittest.TestCase):
             ]
         )
 
-        aligned = batch.align_to(target_schema)
+        aligned = incoming_schema.align_table(tbl, target_schema)
         self.assertEqual(aligned.schema, target_schema)
         self.assertEqual(
             aligned.to_pylist(),
@@ -228,7 +234,7 @@ class TestSchemaModels(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmpdir:
             pq_path = Path(tmpdir) / "part-0.parquet"
-            batch.to_parquet(pq_path, target_schema=target_schema)
+            pq.write_table(aligned, pq_path)
             read_back = pq.read_table(pq_path)
             self.assertEqual(
                 read_back.to_pylist(),
@@ -280,12 +286,8 @@ class TestSchemaModels(unittest.TestCase):
                 ]
             ),
         )
-        tbl = pa.Table.from_pylist(
-            [{"id": 1, "profile": {"name": "Alice"}}, {"id": 2, "profile": None}],
-            schema=src_schema.arrow_schema,
-        )
-        batch = TableBatch(
-            destination="users", table_schema=src_schema, arrow_table=tbl
+        tbl = src_schema.to_arrow(
+            [{"id": 1, "profile": {"name": "Alice"}}, {"id": 2, "profile": None}]
         )
         target_struct_schema = pa.schema(
             [
@@ -301,7 +303,7 @@ class TestSchemaModels(unittest.TestCase):
                 ),
             ]
         )
-        aligned = batch.align_to(target_struct_schema)
+        aligned = src_schema.align_table(tbl, target_struct_schema)
         self.assertEqual(aligned.schema, target_struct_schema)
         self.assertEqual(
             aligned.to_pylist(),
@@ -344,12 +346,8 @@ class TestSchemaModels(unittest.TestCase):
                 ]
             ),
         )
-        tbl = pa.Table.from_pylist(
-            [{"items": [{"name": "a"}, {"name": "b"}]}, {"items": None}],
-            schema=src_list_schema.arrow_schema,
-        )
-        batch = TableBatch(
-            destination="events", table_schema=src_list_schema, arrow_table=tbl
+        tbl = src_list_schema.to_arrow(
+            [{"items": [{"name": "a"}, {"name": "b"}]}, {"items": None}]
         )
         target_list_schema = pa.schema(
             [
@@ -366,7 +364,7 @@ class TestSchemaModels(unittest.TestCase):
                 )
             ]
         )
-        aligned = batch.align_to(target_list_schema)
+        aligned = src_list_schema.align_table(tbl, target_list_schema)
         self.assertEqual(
             aligned.to_pylist(),
             [
