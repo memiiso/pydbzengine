@@ -42,3 +42,4 @@ class PostgresDbHelper:
     def execute_sql(self, sql: str):
         with self.get_connection() as conn:
             conn.execute(sqlalchemy.text(sql))
+            conn.commit()

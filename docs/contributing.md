@@ -21,17 +21,22 @@ Contributions are welcome! Whether it's reporting a bug, improving documentation
 2.  **Make Changes**: Write your code and tests.
 3.  **Run Tests**:
     
+    To run fast unit tests (no Docker required, ~5 seconds):
+    ```shell
+    python -m unittest discover -s tests/unit
+    ```
+
     > [!IMPORTANT]
-    > **Docker Prerequisite**: The integration test suite uses `testcontainers` to spin up real PostgreSQL database, Apache Iceberg REST catalog, and MinIO storage instances. Docker must be running on your machine to execute the tests.
-    
+    > **Docker Prerequisite for Integration Tests**: The integration test suite (`tests/integration/`) uses `testcontainers` to spin up real PostgreSQL database, Apache Iceberg REST catalog, and MinIO storage instances. Docker must be running on your machine to execute them.
+
+    To run integration tests:
+    ```shell
+    python -m unittest discover -s tests/integration
+    ```
+
     To run the entire test suite:
     ```shell
-    pytest
-    ```
-    
-    To execute a specific test file (e.g., Iceberg V2 handlers):
-    ```shell
-    pytest tests/test_iceberg_handlerv2.py
+    python -m unittest discover -s tests
     ```
 4.  **Update Documentation**: If you're adding a new feature or changing behavior, update the relevant `docs/` files.
 5.  **Submit a Pull Request**: Push your branch to your fork and create a PR against the `main` branch.
