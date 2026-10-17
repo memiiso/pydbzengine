@@ -33,6 +33,7 @@ classifiers = [
 ]
 dependencies = [
     "jpype1>=1.6.0",
+    "pyarrow",
 ]
 
 [project.optional-dependencies]
