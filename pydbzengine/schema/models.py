@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from collections.abc import Collection, Iterator, Mapping, Sequence
-from dataclasses import dataclass
+from collections.abc import Collection, Iterator
+from dataclasses import dataclass, field
 from enum import Enum
 from functools import cached_property
 from typing import Any
@@ -10,14 +10,12 @@ import pyarrow as pa
 
 from pydbzengine.schema.types import (
     DataTypeHandler,
-    MapTypeHandler,
     SchemaField,
     StructTypeHandler,
 )
 
 __all__ = [
     "DDL_MARKER_FIELDS",
-    "INFERRED_NULL_META_KEY",
     "ChangeBatch",
     "ChangeOp",
     "ChangeRecord",
@@ -28,7 +26,6 @@ __all__ = [
 ]
 
 DDL_MARKER_FIELDS: frozenset[str] = frozenset({"ddl", "databaseName", "tableChanges"})
-INFERRED_NULL_META_KEY = b"debezium.inferred_null"
 
 
 class EventKind(str, Enum):
@@ -86,81 +83,30 @@ class SchemaDiff:
 
     @property
     def is_compatible(self) -> bool:
-        return not self.removed_fields and all(
-            TableSchema.is_inferred_null_field(old_f)
-            for old_f, _ in self.changed_fields
-        )
+        if self.removed_fields:
+            return False
+        if not self.changed_fields:
+            return True
+        old_s = pa.schema([old_f for old_f, _ in self.changed_fields])
+        new_s = pa.schema([new_f for _, new_f in self.changed_fields])
+        try:
+            unified = pa.unify_schemas([new_s, old_s], promote_options="default")
+        except pa.ArrowException:
+            return False
+        return bool(unified.equals(new_s))
 
 
-@dataclass(frozen=True, eq=False)
+@dataclass(frozen=True)
 class TableSchema:
-    """
-    Compiled analytical and operational schema descriptor for a CDC destination.
-    Combines PyArrow value/key/row schemas with primary keys, event kind, and
-    bound DataTypeHandler trees for single-pass JSON and Connect conversion.
-    """
+    """Compiled analytical and operational schema descriptor for a CDC destination."""
 
     destination: str
     kind: EventKind
     arrow_schema: pa.Schema
     primary_keys: tuple[str, ...] = ()
     key_schema: pa.Schema | None = None
-    value_handler: StructTypeHandler | None = None
-    key_handler: DataTypeHandler | None = None
-
-    def __post_init__(self) -> None:
-        if not isinstance(self.destination, str) or not self.destination.strip():
-            raise ValueError("TableSchema destination cannot be empty.")
-        if not isinstance(self.kind, EventKind):
-            raise TypeError(
-                f"Expected EventKind for TableSchema.kind, got {type(self.kind).__name__}"
-            )
-        if not isinstance(self.arrow_schema, pa.Schema):
-            raise TypeError(
-                f"Expected pa.Schema for TableSchema.arrow_schema, got {type(self.arrow_schema).__name__}"
-            )
-        if len(self.arrow_schema) == 0:
-            raise ValueError(
-                f"TableSchema for destination '{self.destination}' must contain at least one field."
-            )
-        if self.key_schema is not None:
-            if not isinstance(self.key_schema, pa.Schema):
-                raise TypeError(
-                    f"Expected pa.Schema for TableSchema.key_schema, got {type(self.key_schema).__name__}"
-                )
-            if len(self.key_schema) == 0:
-                raise ValueError(
-                    f"TableSchema key_schema for destination '{self.destination}' cannot be empty."
-                )
-
-    def __eq__(self, other: object) -> bool:
-        if self is other:
-            return True
-        if not isinstance(other, TableSchema):
-            return NotImplemented
-        key_eq = (self.key_schema is None and other.key_schema is None) or (
-            self.key_schema is not None
-            and other.key_schema is not None
-            and self.key_schema.equals(other.key_schema, check_metadata=True)
-        )
-        return (
-            self.destination == other.destination
-            and self.kind == other.kind
-            and self.primary_keys == other.primary_keys
-            and self.arrow_schema.equals(other.arrow_schema, check_metadata=True)
-            and key_eq
-        )
-
-    def __hash__(self) -> int:
-        return hash(
-            (
-                self.destination,
-                self.kind,
-                self.arrow_schema,
-                self.primary_keys,
-                self.key_schema,
-            )
-        )
+    value_handler: StructTypeHandler | None = field(default=None, compare=False)
+    key_handler: DataTypeHandler | None = field(default=None, compare=False)
 
     @property
     def value_schema(self) -> pa.Schema:
@@ -192,58 +138,22 @@ class TableSchema:
     def is_envelope(self) -> bool:
         return self.row_schema is not self.arrow_schema
 
-    @classmethod
-    def is_inferred_null_field(cls, field_obj: pa.Field) -> bool:
-        if (
-            field_obj.metadata
-            and field_obj.metadata.get(INFERRED_NULL_META_KEY) == b"true"
-        ):
-            return True
-        if pa.types.is_struct(field_obj.type):
-            return any(cls.is_inferred_null_field(sf) for sf in field_obj.type)
-        if pa.types.is_list(field_obj.type):
-            return cls.is_inferred_null_field(field_obj.type.value_field)
-        if pa.types.is_map(field_obj.type):
-            return cls.is_inferred_null_field(field_obj.type.item_field)
-        return False
-
     @staticmethod
     def extract_row_schema(schema: pa.Schema) -> pa.Schema:
         names = set(schema.names)
         if "op" in names:
-            for candidate in ("after", "before"):
-                if candidate in names:
-                    f_type = schema.field(candidate).type
-                    if pa.types.is_struct(f_type):
-                        return pa.schema(list(f_type))
-        return schema
-
-    @staticmethod
-    def select_primary_keys(
-        primary_keys: tuple[str, ...],
-        fields: Sequence[pa.Field],
-    ) -> tuple[str, ...]:
-        candidate_fields: dict[str, pa.DataType] = {}
-        is_env = any(f.name == "op" for f in fields) and any(
-            f.name in ("after", "before") and pa.types.is_struct(f.type) for f in fields
-        )
-        if is_env:
-            for f in fields:
-                if f.name in ("after", "before") and pa.types.is_struct(f.type):
-                    for sub_f in f.type:
-                        candidate_fields.setdefault(sub_f.name, sub_f.type)
-        else:
-            for f in fields:
-                candidate_fields[f.name] = f.type
-
-        valid_pks = tuple(pk for pk in primary_keys if pk in candidate_fields)
-        for pk in valid_pks:
-            pk_type = candidate_fields[pk]
-            if pa.types.is_nested(pk_type):
-                raise ValueError(
-                    f"Complex field '{pk}' of type {pk_type} cannot be part of the primary key."
+            row_schemas = [
+                pa.schema(list(schema.field(c).type))
+                for c in ("after", "before")
+                if c in names and pa.types.is_struct(schema.field(c).type)
+            ]
+            if row_schemas:
+                return (
+                    row_schemas[0]
+                    if len(row_schemas) == 1 or row_schemas[0] == row_schemas[1]
+                    else pa.unify_schemas(row_schemas, promote_options="permissive")
                 )
-        return valid_pks
+        return schema
 
     def diff(
         self,
@@ -275,101 +185,6 @@ class TableSchema:
             changed_fields=changed,
         )
 
-    def convert_json_value(self, payload: Mapping[str, Any]) -> dict[str, Any]:
-        if self.value_handler is None:
-            raise ValueError(
-                f"TableSchema for destination '{self.destination}' has no compiled value_handler."
-            )
-        return self.value_handler.convert_json(payload)
-
-    def convert_connect_value(self, struct_val: Any) -> dict[str, Any]:
-        if self.value_handler is None:
-            raise ValueError(
-                f"TableSchema for destination '{self.destination}' has no compiled value_handler."
-            )
-        return self.value_handler.convert_connect(struct_val)
-
-    @classmethod
-    def convert_json_key_with_handler(
-        cls,
-        key_payload: Mapping[str, Any],
-        *,
-        key_handler: DataTypeHandler | None,
-        key_schema: pa.Schema | None = None,
-    ) -> dict[str, Any]:
-        if not isinstance(key_payload, Mapping):
-            raise TypeError(
-                f"Expected Mapping for JSON key payload, got {type(key_payload).__name__}: {key_payload!r}"
-            )
-        if isinstance(key_handler, StructTypeHandler):
-            return key_handler.convert_json(key_payload)
-        if isinstance(key_handler, MapTypeHandler):
-            converted = key_handler.convert_json(key_payload)
-            return {str(k): v for k, v in converted.items()}
-        if key_handler is not None:
-            key_name = (
-                key_schema[0].name
-                if key_schema is not None and len(key_schema) > 0
-                else "key"
-            )
-            if key_name in key_payload:
-                return {key_name: key_handler.convert_json(key_payload[key_name])}
-            if len(key_payload) == 1:
-                return {
-                    str(k): key_handler.convert_json(v) for k, v in key_payload.items()
-                }
-            raise ValueError(
-                f"Scalar key handler expected field '{key_name}', got {list(key_payload.keys())}"
-            )
-        return dict(key_payload)
-
-    def convert_json_key(
-        self, key_payload: Mapping[str, Any] | None
-    ) -> dict[str, Any] | None:
-        if key_payload is None:
-            return None
-        return self.convert_json_key_with_handler(
-            key_payload,
-            key_handler=self.key_handler,
-            key_schema=self.key_schema,
-        )
-
-    @classmethod
-    def convert_connect_key_with_handler(
-        cls,
-        key_val: Any,
-        *,
-        key_handler: DataTypeHandler | None,
-        key_schema: pa.Schema | None,
-        destination: str,
-    ) -> dict[str, Any]:
-        if isinstance(key_handler, StructTypeHandler):
-            return key_handler.convert_connect(key_val)
-        if isinstance(key_handler, MapTypeHandler):
-            converted = key_handler.convert_connect(key_val)
-            return {str(k): v for k, v in converted.items()}
-        if key_handler is not None:
-            key_name = (
-                key_schema[0].name
-                if key_schema is not None and len(key_schema) > 0
-                else "key"
-            )
-            return {key_name: key_handler.convert_connect(key_val)}
-        raise TypeError(
-            f"Unsupported Connect key type {type(key_val).__name__} without compiled key_handler "
-            f"for destination '{destination}'"
-        )
-
-    def convert_connect_key(self, key_val: Any) -> dict[str, Any] | None:
-        if key_val is None:
-            return None
-        return self.convert_connect_key_with_handler(
-            key_val,
-            key_handler=self.key_handler,
-            key_schema=self.key_schema,
-            destination=self.destination,
-        )
-
 
 @dataclass(frozen=True, slots=True)
 class ChangeRecord:
@@ -385,52 +200,13 @@ class ChangeRecord:
     destination: str = ""
 
     def __post_init__(self) -> None:
-        if self.schema is not None and not isinstance(self.schema, TableSchema):
-            raise TypeError(
-                f"Expected TableSchema or None for ChangeRecord.schema, got {type(self.schema).__name__}"
-            )
-        if self.value is not None and not isinstance(self.value, dict):
-            raise TypeError(
-                f"Expected dict or None for ChangeRecord.value, got {type(self.value).__name__}"
-            )
-        if self.value is not None and self.schema is None:
-            raise ValueError(
-                "Non-tombstone ChangeRecord (value is not None) requires a TableSchema."
-            )
-        if self.key is not None and not isinstance(self.key, dict):
-            raise TypeError(
-                f"Expected dict or None for ChangeRecord.key, got {type(self.key).__name__}"
-            )
-        if self.partition is not None and (
-            isinstance(self.partition, bool) or not isinstance(self.partition, int)
-        ):
-            raise TypeError(
-                f"Expected int or None for ChangeRecord.partition, got {type(self.partition).__name__}"
-            )
-        if not isinstance(self.destination, str):
-            raise TypeError(
-                f"Expected str for ChangeRecord.destination, got {type(self.destination).__name__}"
-            )
-        resolved_dest = self.destination.strip()
-        if self.schema is not None:
-            if resolved_dest and resolved_dest != self.schema.destination:
-                raise ValueError(
-                    f"ChangeRecord destination '{resolved_dest}' does not match "
-                    f"TableSchema destination '{self.schema.destination}'."
-                )
+        if self.schema is not None and not self.destination:
             object.__setattr__(self, "destination", self.schema.destination)
-        else:
-            if not resolved_dest:
-                raise ValueError(
-                    "Tombstone ChangeRecord without TableSchema requires a non-empty destination."
-                )
-            object.__setattr__(self, "destination", resolved_dest)
 
     @property
     def kind(self) -> EventKind:
-        if self.value is None:
+        if self.value is None or self.schema is None:
             return EventKind.TOMBSTONE
-        assert self.schema is not None
         return self.schema.kind
 
     @property
@@ -441,60 +217,22 @@ class ChangeRecord:
         val = self.value.get("op")
         if val is None:
             val = self.value.get("__op")
-        if val is None:
-            return None
-        if isinstance(val, ChangeOp):
-            return val
-        if not isinstance(val, str):
-            raise TypeError(
-                f"Expected str for operation code 'op', got {type(val).__name__}: {val!r}"
-            )
-        try:
-            return ChangeOp(val)
-        except ValueError as err:
-            raise ValueError(f"Unsupported Debezium operation code: {val!r}") from err
+        return ChangeOp(val) if val is not None else None
 
     @property
     def before(self) -> dict[str, Any] | None:
         """Before-state payload dictionary if present in envelope value."""
-        if self.value is None:
-            return None
-        val = self.value.get("before")
-        if val is None:
-            return None
-        if not isinstance(val, dict):
-            raise TypeError(
-                f"Expected dict for 'before' state, got {type(val).__name__}: {val!r}"
-            )
-        return val
+        return self.value.get("before") if self.value is not None else None
 
     @property
     def after(self) -> dict[str, Any] | None:
         """After-state payload dictionary if present in envelope value."""
-        if self.value is None:
-            return None
-        val = self.value.get("after")
-        if val is None:
-            return None
-        if not isinstance(val, dict):
-            raise TypeError(
-                f"Expected dict for 'after' state, got {type(val).__name__}: {val!r}"
-            )
-        return val
+        return self.value.get("after") if self.value is not None else None
 
     @property
     def source(self) -> dict[str, Any] | None:
         """Debezium source metadata dictionary if present in envelope value."""
-        if self.value is None:
-            return None
-        val = self.value.get("source")
-        if val is None:
-            return None
-        if not isinstance(val, dict):
-            raise TypeError(
-                f"Expected dict for 'source' metadata, got {type(val).__name__}: {val!r}"
-            )
-        return val
+        return self.value.get("source") if self.value is not None else None
 
     @property
     def data(self) -> dict[str, Any] | None:
@@ -502,9 +240,8 @@ class ChangeRecord:
         Returns the active table row dictionary: `after` (or `before` on delete)
         for envelope events, or `value` directly for flattened events.
         """
-        if self.value is None:
+        if self.value is None or self.schema is None:
             return None
-        assert self.schema is not None
         if self.schema.is_envelope:
             return self.after if self.after is not None else self.before
         return self.value
@@ -517,45 +254,17 @@ class TableBatch:
     schema: TableSchema
     records: tuple[ChangeRecord, ...] = ()
 
-    def __post_init__(self) -> None:
-        if not isinstance(self.schema, TableSchema):
-            raise TypeError(
-                f"Expected TableSchema for TableBatch.schema, got {type(self.schema).__name__}"
-            )
-        for r in self.records:
-            if r.value is None:
-                raise ValueError(
-                    f"TableBatch for destination '{self.destination}' cannot contain tombstone records."
-                )
-            if r.destination != self.schema.destination:
-                raise ValueError(
-                    f"TableBatch destination mismatch: expected '{self.schema.destination}', got '{r.destination}'."
-                )
-            if r.schema != self.schema:
-                raise ValueError(
-                    f"TableBatch schema mismatch for destination '{self.destination}'."
-                )
-
     @property
     def destination(self) -> str:
         return self.schema.destination
 
     @property
     def rows(self) -> list[dict[str, Any]]:
-        return [r.value for r in self.records]  # type: ignore[misc]
+        return [r.value for r in self.records if r.value is not None]
 
     @property
     def data_rows(self) -> list[dict[str, Any]]:
-        result: list[dict[str, Any]] = []
-        for r in self.records:
-            row_data = r.data
-            if row_data is None:
-                raise ValueError(
-                    f"Cannot extract row data from record with neither 'after' nor 'before' state "
-                    f"for destination '{self.destination}'."
-                )
-            result.append(row_data)
-        return result
+        return [r.data for r in self.records if r.data is not None]
 
     def to_arrow(
         self,
@@ -587,13 +296,6 @@ class ChangeBatch:
 
     records: tuple[ChangeRecord, ...] = ()
 
-    def __post_init__(self) -> None:
-        for r in self.records:
-            if not isinstance(r, ChangeRecord):
-                raise TypeError(
-                    f"Expected ChangeRecord in ChangeBatch.records, got {type(r).__name__}"
-                )
-
     @property
     def data_records(self) -> tuple[ChangeRecord, ...]:
         return self.of_kind(EventKind.DATA)
@@ -618,7 +320,8 @@ class ChangeBatch:
             str, list[tuple[TableSchema, list[ChangeRecord]]]
         ] = {}
         for record in self.of_kind(kind):
-            assert record.schema is not None
+            if record.schema is None:
+                continue
             runs = runs_by_destination.setdefault(record.destination, [])
             if runs and runs[-1][0] == record.schema:
                 runs[-1][1].append(record)

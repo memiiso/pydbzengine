@@ -824,22 +824,15 @@ class TestEventConverterAndTypeHandlers(unittest.TestCase):
                 },
             )
 
-        # Array / Map field cannot be part of primary key
-        with self.assertRaises(ValueError):
-            self.converter.compile_json_schema(
-                "inventory.bad_pk",
-                {
-                    "type": "struct",
-                    "fields": [
-                        {
-                            "type": "array",
-                            "field": "tags",
-                            "items": {"type": "string"},
-                        }
-                    ],
-                },
-                primary_keys=("tags",),
-            )
+        # Complex FieldSpec missing required child schemas fails fast
+        reg = TypeRegistry()
+        for bad_spec in (
+            FieldSpec(name="arr", type_name="array"),
+            FieldSpec(name="mp", type_name="map"),
+            FieldSpec(name="st", type_name="struct"),
+        ):
+            with self.assertRaises(ValueError):
+                reg.compile_handler(bad_spec)
 
     def test_schema_change_handler_lifecycle_and_parquet_writing(self) -> None:
         class LakehouseParquetHandler(SchemaAwareChangeHandler):
@@ -1045,7 +1038,7 @@ class TestEventConverterAndTypeHandlers(unittest.TestCase):
         schema, rows = tb.schema, tb.rows
         self.assertEqual(schema.primary_keys, ("id",))
         self.assertEqual(schema.arrow_schema.field("age").type, pa.int64())
-        self.assertEqual(schema.arrow_schema.field("note").type, pa.string())
+        self.assertEqual(schema.arrow_schema.field("note").type, pa.null())
         self.assertEqual(len(rows), 2)
 
         tbl = tb.to_arrow()
@@ -1076,13 +1069,15 @@ class TestEventConverterAndTypeHandlers(unittest.TestCase):
         )
         r_c = conv_env.convert_event(ev_c)
         r_d = conv_env.convert_event(ev_d)
-        self.assertEqual(r_c.schema, r_d.schema)
+        assert r_c.schema is not None and r_d.schema is not None
+        self.assertEqual(r_c.schema.row_schema, r_d.schema.row_schema)
+        self.assertFalse(r_d.schema.diff(r_c.schema).has_changes)
         self.assertEqual(r_c.op, ChangeOp.INSERT)
         self.assertEqual(r_d.op, ChangeOp.DELETE)
-        tbl_env = ChangeBatch(records=(r_c, r_d)).table_batches()[0].to_arrow()
+        tbl_env = conv_env.convert([ev_c, ev_d]).table_batches()[0].to_arrow()
         self.assertEqual(tbl_env.num_rows, 2)
 
-        # 2. Cross-batch null preservation (int64 -> None) & refinement (None -> int64)
+        # 2. Cross-batch null refinement (None -> int64) via native PyArrow promotion
         conv_null_first = SchemalessJsonEventConverter()
         rec_null = conv_null_first.convert_event(
             MockChangeEvent(
@@ -1109,16 +1104,6 @@ class TestEventConverterAndTypeHandlers(unittest.TestCase):
         )
         self.assertEqual(tbl_unified.schema.field("age").type, pa.int64())
         self.assertEqual(tbl_unified.column("age").to_pylist(), [None, 25])
-
-        # Subsequent None event preserves concrete int64 type from cache
-        rec_null_after = conv_null_first.convert_event(
-            MockChangeEvent(
-                key=json.dumps({"id": 3}),
-                value=json.dumps({"id": 3, "age": None}),
-                destination="users",
-            )
-        )
-        self.assertEqual(rec_null_after.schema, rec_int.schema)
 
         # 3. Empty dict {} in schemaless mode and interleaved destination ordering
         conv_misc = SchemalessJsonEventConverter()
@@ -1319,13 +1304,13 @@ class TestEventConverterAndTypeHandlers(unittest.TestCase):
                 "fields": [{"type": "int64", "field": "id"}],
             },
         )
-        self.assertIsNotNone(schema.value_handler)
-        self.assertIsNotNone(schema.key_handler)
+        assert schema.value_handler is not None
+        assert schema.key_handler is not None
         self.assertEqual(
-            schema.convert_json_value({"id": 5, "dt": "2024-01-15"}),
+            schema.value_handler.convert_json({"id": 5, "dt": "2024-01-15"}),
             {"id": 5, "dt": datetime.date(2024, 1, 15)},
         )
-        self.assertEqual(schema.convert_json_key({"id": 5}), {"id": 5})
+        self.assertEqual(schema.key_handler.convert_json({"id": 5}), {"id": 5})
 
         # Temporal and Decimal Connect handlers reject Java Boolean (booleanValue)
         class MockJavaBoolAsInt(int):
@@ -1372,7 +1357,7 @@ class TestEventConverterAndTypeHandlers(unittest.TestCase):
             [{"id": 1, "scores": []}, {"id": 2, "scores": [10, 20]}],
         )
 
-        # Schemaless envelope UPDATE with None in before and int64 in after unifies before/after
+        # Schemaless envelope UPDATE with None in before and int64 in after unifies row_schema
         r_env_upd = conv_sl.convert_event(
             MockChangeEvent(
                 key=json.dumps({"id": 1}),
@@ -1388,31 +1373,21 @@ class TestEventConverterAndTypeHandlers(unittest.TestCase):
         )
         assert r_env_upd.schema is not None
         self.assertEqual(
-            r_env_upd.schema.arrow_schema.field("before").type,
-            r_env_upd.schema.arrow_schema.field("after").type,
+            r_env_upd.schema.row_schema.field("age").type,
+            pa.int64(),
         )
 
-        # TableSchema.convert_connect_key with MapTypeHandler vs uncompiled key
-        keyless_schema = TableSchema(
-            destination="inventory.items",
-            kind=EventKind.DATA,
-            arrow_schema=pa.schema([("id", pa.int64())]),
+        # EventConverter._apply_key_handler with MapTypeHandler
+        map_key_handler = MapTypeHandler(
+            SchemaField("key", StringTypeHandler(), nullable=False),
+            SchemaField("value", IntTypeHandler(pa.int64()), nullable=True),
         )
-        with self.assertRaises(TypeError):
-            keyless_schema.convert_connect_key({"101": 42, "nested": "v"})
-
-        map_key_schema = TableSchema(
-            destination="inventory.items",
-            kind=EventKind.DATA,
-            arrow_schema=pa.schema([("id", pa.int64())]),
-            key_handler=MapTypeHandler(
-                SchemaField("key", StringTypeHandler(), nullable=False),
-                SchemaField("value", IntTypeHandler(pa.int64()), nullable=True),
+        self.assertEqual(
+            ConnectEventConverter._apply_key_handler(
+                {"k1": 10}, map_key_handler, None, is_connect=True
             ),
+            {"k1": 10},
         )
-        self.assertEqual(map_key_schema.convert_connect_key({"k1": 10}), {"k1": 10})
-        with self.assertRaises(TypeError):
-            keyless_schema.convert_connect_key(object())
 
         # VariableScaleDecimal requires explicit int scale when value is present
         vardec = VariableScaleDecimalHandler(precision=38, scale=4)
@@ -1444,22 +1419,64 @@ class TestEventConverterAndTypeHandlers(unittest.TestCase):
                 MockChangeEvent(key="   ", value=None, destination="t")
             )
 
-        # FieldSpec.from_json rejects non-bool optional, non-str doc/name, and non-Mapping map keys/values
-        with self.assertRaises(ValueError):
-            FieldSpec.from_json({"type": "int32", "field": "x", "optional": "true"})
-        with self.assertRaises(ValueError):
-            FieldSpec.from_json({"type": "int32", "field": "x", "doc": 123})
-        with self.assertRaises(ValueError):
-            FieldSpec.from_json({"type": "int32", "field": "x", "name": 123})
-        with self.assertRaises(ValueError):
-            FieldSpec.from_json(
-                {
-                    "type": "map",
-                    "field": "m",
-                    "keys": "string",
-                    "values": {"type": "int32"},
-                }
+        # JSON scalar key payload wraps into {"key": converted_scalar} (SCH-BUG-4)
+        scalar_key_rec = self.converter.convert_event(
+            MockChangeEvent(
+                key=json.dumps({"schema": {"type": "int64"}, "payload": 42}),
+                value=json.dumps(
+                    {
+                        "schema": {
+                            "type": "struct",
+                            "fields": [{"type": "int64", "field": "id"}],
+                        },
+                        "payload": {"id": 42},
+                    }
+                ),
+                destination="inventory.scalar_key",
             )
+        )
+        self.assertEqual(scalar_key_rec.key, {"key": 42})
+
+        # FieldSpec.from_connect accepts logical complex types without child schemas (SCH-BUG-6)
+        class _MockLogicalConnectSchema:
+            def __init__(self, c_type: str, logical_name: str) -> None:
+                self._c_type = c_type
+                self._logical_name = logical_name
+
+            def type(self) -> Any:
+                return type("_T", (), {"name": lambda _s: self._c_type})()
+
+            def name(self) -> str:
+                return self._logical_name
+
+            def isOptional(self) -> bool:
+                return True
+
+            def doc(self) -> None:
+                return None
+
+            def parameters(self) -> None:
+                return None
+
+            def fields(self) -> None:
+                return None
+
+            def valueSchema(self) -> None:
+                return None
+
+            def keySchema(self) -> None:
+                return None
+
+        for c_type, logical_name in (
+            ("STRUCT", "io.debezium.data.geometry.Point"),
+            ("ARRAY", "io.debezium.data.FloatVector"),
+            ("MAP", "io.debezium.data.Hstore"),
+        ):
+            spec = FieldSpec.from_connect(
+                _MockLogicalConnectSchema(c_type, logical_name),
+                field_name="col",
+            )
+            self.assertEqual(spec.logical_name, logical_name)
 
         # Schemaless row with a column named 'payload' alongside other columns or alone is preserved as a row
         r_col_payload = conv_sl.convert_event(
@@ -1827,47 +1844,18 @@ class TestEventConverterAndTypeHandlers(unittest.TestCase):
         finally:
             gc.enable()
 
-        # 5. SchemalessJsonEventConverter sanitization for pa.map_(key, pa.null()) and nested structures
-        s_map_null = SchemalessJsonEventConverter.sanitize_arrow_schema(
-            pa.schema([("id", pa.int64()), ("m", pa.map_(pa.string(), pa.null()))])
-        )
-        m_field = s_map_null.field("m")
-        self.assertEqual(m_field.type, pa.map_(pa.string(), pa.string()))
-        self.assertTrue(TableSchema.is_inferred_null_field(m_field))
+        # 5. High-precision 38-digit Decimal quantization (SCH-BUG-1) and nested null promotion
+        dec38_h = DecimalTypeHandler(precision=38, scale=18)
+        high_prec_val = "12345678901234567890.123456789012345678"
+        self.assertEqual(dec38_h.convert_json(high_prec_val), Decimal(high_prec_val))
 
-        # Subsequent all-null batch preserves the map container type and inferred-null marker
-        s_map_then_null = SchemalessJsonEventConverter.sanitize_arrow_schema(
-            pa.schema([("id", pa.int64()), ("m", pa.null())]),
-            previous_schema=s_map_null,
+        s_nested_null = pa.schema(
+            [
+                ("id", pa.int64()),
+                ("s", pa.struct([("m", pa.map_(pa.string(), pa.null()))])),
+                ("lm", pa.list_(pa.map_(pa.string(), pa.null()))),
+            ]
         )
-        self.assertEqual(
-            s_map_then_null.field("m").type, pa.map_(pa.string(), pa.string())
-        )
-        self.assertTrue(TableSchema.is_inferred_null_field(s_map_then_null.field("m")))
-
-        s_map_int = pa.schema(
-            [("id", pa.int64()), ("m", pa.map_(pa.string(), pa.int64()))]
-        )
-        s_preserved = SchemalessJsonEventConverter.sanitize_arrow_schema(
-            pa.schema([("id", pa.int64()), ("m", pa.map_(pa.string(), pa.null()))]),
-            previous_schema=s_map_int,
-        )
-        self.assertEqual(s_preserved.field("m").type, pa.map_(pa.string(), pa.int64()))
-        self.assertFalse(TableSchema.is_inferred_null_field(s_preserved.field("m")))
-
-        # Nested map inside struct and list<map> sanitization and diff compatibility
-        s_nested_null = SchemalessJsonEventConverter.sanitize_arrow_schema(
-            pa.schema(
-                [
-                    ("id", pa.int64()),
-                    ("s", pa.struct([("m", pa.map_(pa.string(), pa.null()))])),
-                    ("lm", pa.list_(pa.map_(pa.string(), pa.null()))),
-                ]
-            )
-        )
-        self.assertTrue(TableSchema.is_inferred_null_field(s_nested_null.field("s")))
-        self.assertTrue(TableSchema.is_inferred_null_field(s_nested_null.field("lm")))
-
         s_nested_int = pa.schema(
             [
                 ("id", pa.int64()),

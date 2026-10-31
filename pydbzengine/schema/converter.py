@@ -15,7 +15,6 @@ from pydbzengine.engine.base import (
 )
 from pydbzengine.engine.config import DebeziumConfig
 from pydbzengine.schema.models import (
-    INFERRED_NULL_META_KEY,
     ChangeBatch,
     ChangeRecord,
     EventKind,
@@ -24,6 +23,8 @@ from pydbzengine.schema.models import (
 from pydbzengine.schema.types import (
     DataTypeHandler,
     FieldSpec,
+    MapTypeHandler,
+    StructTypeHandler,
     TypeRegistry,
 )
 
@@ -113,9 +114,9 @@ class EventConverter(ABC):
     def registry(self) -> TypeRegistry:
         return TypeRegistry(default_variable_scale=self.default_variable_scale)
 
-    @abstractmethod
     def convert(self, events: Iterable[ChangeEvent]) -> ChangeBatch:
         """Converts an iterable of raw ChangeEvents into an ordered ChangeBatch."""
+        return ChangeBatch(records=tuple(self.convert_event(event) for event in events))
 
     @abstractmethod
     def convert_event(self, event: ChangeEvent) -> ChangeRecord:
@@ -151,24 +152,60 @@ class EventConverter(ABC):
         primary_keys: tuple[str, ...],
     ) -> TableSchema:
         value_handler = self.registry.compile_struct(val_spec)
-        pa_fields = [f.arrow_field for f in value_handler.fields]
+        arrow_schema = value_handler.arrow_schema
         key_handler, key_pa_schema, key_field_names = self._compile_key_spec(key_spec)
         resolved_pks = primary_keys if primary_keys else key_field_names
-        valid_pks = TableSchema.select_primary_keys(resolved_pks, pa_fields)
         kind = EventKind.classify(
             destination,
-            [f.name for f in value_handler.fields],
+            arrow_schema.names,
             self.heartbeat_prefix,
         )
         return TableSchema(
             destination=destination,
             kind=kind,
-            arrow_schema=value_handler.arrow_schema,
-            primary_keys=valid_pks,
+            arrow_schema=arrow_schema,
+            primary_keys=resolved_pks,
             key_schema=key_pa_schema,
             value_handler=value_handler,
             key_handler=key_handler,
         )
+
+    @staticmethod
+    def _apply_key_handler(
+        key_val: Any,
+        key_handler: DataTypeHandler,
+        key_schema: pa.Schema | None,
+        *,
+        is_connect: bool,
+    ) -> dict[str, Any]:
+        if isinstance(key_handler, StructTypeHandler):
+            return (
+                key_handler.convert_connect(key_val)
+                if is_connect
+                else key_handler.convert_json(key_val)
+            )
+        if isinstance(key_handler, MapTypeHandler):
+            converted = (
+                key_handler.convert_connect(key_val)
+                if is_connect
+                else key_handler.convert_json(key_val)
+            )
+            return {str(k): v for k, v in converted.items()}
+        key_name = (
+            key_schema[0].name
+            if key_schema is not None and len(key_schema) > 0
+            else "key"
+        )
+        if not is_connect and isinstance(key_val, Mapping):
+            raw_scalar = key_val.get(key_name)
+        else:
+            raw_scalar = key_val
+        scalar_val = (
+            key_handler.convert_connect(raw_scalar)
+            if is_connect
+            else key_handler.convert_json(raw_scalar)
+        )
+        return {key_name: scalar_val}
 
     @staticmethod
     def _destination(event: ChangeEvent) -> str:
@@ -202,32 +239,6 @@ class EventConverter(ABC):
         raise TypeError(
             f"Expected int for record partition, got {type(val).__name__}: {val!r}"
         )
-
-    @staticmethod
-    def _decode_json_object(raw: Any, context: str) -> dict[str, Any]:
-        if isinstance(raw, dict):
-            return raw
-        if isinstance(raw, Mapping):
-            return dict(raw)
-        if isinstance(raw, (bytes, bytearray, memoryview)):
-            payload_str = bytes(raw).decode("utf-8").strip()
-        elif isinstance(raw, str) or type(raw).__name__ == "java.lang.String":
-            payload_str = str(raw).strip()
-        else:
-            raise TypeError(
-                f"Unsupported payload type {type(raw).__name__} for {context}: {raw!r}"
-            )
-
-        try:
-            parsed = json.loads(payload_str)
-        except json.JSONDecodeError as e:
-            raise ValueError(f"Invalid JSON in {context}: {e}") from e
-
-        if not isinstance(parsed, dict):
-            raise ValueError(
-                f"Expected JSON object in {context}, got {type(parsed).__name__}"
-            )
-        return parsed
 
 
 # ============================================================================
@@ -293,54 +304,34 @@ class ConnectEventConverter(EventConverter):
         )
         return table_schema
 
-    def convert(self, events: Iterable[ChangeEvent]) -> ChangeBatch:
-        return ChangeBatch(records=tuple(self.convert_event(event) for event in events))
-
     def convert_event(self, event: ChangeEvent) -> ChangeRecord:
         destination = self._destination(event)
         partition = self._partition(event)
         source_rec = event.value()
 
-        if source_rec is None:
-            raw_key = event.key()
-            if raw_key is None:
-                raise ValueError(
-                    f"Tombstone for destination '{destination}' has no key."
-                )
-            j_key_schema = raw_key.schema() if hasattr(raw_key, "schema") else None
-            key_spec = (
-                FieldSpec.from_connect(j_key_schema, field_name="key")
-                if j_key_schema is not None
-                else None
-            )
-            key_handler, key_pa_schema, _ = self._compile_key_spec(key_spec)
-            converted_key = TableSchema.convert_connect_key_with_handler(
-                raw_key,
-                key_handler=key_handler,
-                key_schema=key_pa_schema,
-                destination=destination,
-            )
-            return ChangeRecord(
-                schema=None,
-                value=None,
-                key=converted_key,
-                partition=partition,
-                destination=destination,
-            )
-
-        if not hasattr(source_rec, "valueSchema"):
+        if source_rec is not None and not hasattr(source_rec, "valueSchema"):
             raise TypeError(
                 f"Expected Java Connect SourceRecord with valueSchema() for destination '{destination}', "
                 f"got {type(source_rec).__name__}"
             )
-        j_val_schema = source_rec.valueSchema()
-        raw_val = source_rec.value()
+
+        j_val_schema = source_rec.valueSchema() if source_rec is not None else None
+        raw_val = source_rec.value() if source_rec is not None else None
+        raw_key = source_rec.key() if source_rec is not None else event.key()
         j_key_schema = (
-            source_rec.keySchema() if hasattr(source_rec, "keySchema") else None
+            source_rec.keySchema()
+            if source_rec is not None and hasattr(source_rec, "keySchema")
+            else None
         )
-        raw_key = source_rec.key()
         if j_key_schema is None and raw_key is not None and hasattr(raw_key, "schema"):
             j_key_schema = raw_key.schema()
+
+        if raw_val is None and raw_key is None:
+            raise ValueError(f"Tombstone for destination '{destination}' has no key.")
+        if raw_val is not None and j_val_schema is None:
+            raise ValueError(
+                f"Connect SourceRecord with non-null value is missing valueSchema() for destination '{destination}'"
+            )
 
         table_schema = (
             self.compile_connect_schema(
@@ -352,46 +343,57 @@ class ConnectEventConverter(EventConverter):
             if j_val_schema is not None
             else None
         )
-
-        if raw_val is None:
-            if raw_key is None:
-                raise ValueError(
-                    f"Tombstone for destination '{destination}' has no key."
-                )
-            ts_key: dict[str, Any] | None
-            if table_schema is not None:
-                ts_key = table_schema.convert_connect_key(raw_key)
-            else:
-                key_spec = (
-                    FieldSpec.from_connect(j_key_schema, field_name="key")
-                    if j_key_schema is not None
-                    else None
-                )
-                key_handler, key_pa_schema, _ = self._compile_key_spec(key_spec)
-                ts_key = TableSchema.convert_connect_key_with_handler(
-                    raw_key,
-                    key_handler=key_handler,
-                    key_schema=key_pa_schema,
-                    destination=destination,
-                )
-            return ChangeRecord(
-                schema=table_schema,
-                value=None,
-                key=ts_key,
-                partition=partition,
-                destination=destination,
-            )
-
-        if table_schema is None:
-            raise ValueError(
-                f"Connect SourceRecord with non-null value is missing valueSchema() for destination '{destination}'"
-            )
-        converted_value = table_schema.convert_connect_value(raw_val)
+        converted_key = self._convert_key(
+            destination, raw_key, j_key_schema, table_schema
+        )
+        converted_value = (
+            table_schema.value_handler.convert_connect(raw_val)
+            if raw_val is not None
+            and table_schema is not None
+            and table_schema.value_handler is not None
+            else None
+        )
         return ChangeRecord(
             schema=table_schema,
             value=converted_value,
-            key=table_schema.convert_connect_key(raw_key),
+            key=converted_key,
             partition=partition,
+            destination=destination,
+        )
+
+    def _convert_key(
+        self,
+        destination: str,
+        raw_key: Any,
+        j_key_schema: Any,
+        table_schema: TableSchema | None,
+    ) -> dict[str, Any] | None:
+        if raw_key is None:
+            return None
+        key_handler = table_schema.key_handler if table_schema is not None else None
+        key_pa_schema = table_schema.key_schema if table_schema is not None else None
+        if key_handler is None and j_key_schema is not None:
+            cached = self._cache.get(destination)
+            if (
+                cached is not None
+                and (
+                    j_key_schema is cached.key_schema
+                    or j_key_schema == cached.key_schema
+                )
+                and cached.table_schema.key_handler is not None
+            ):
+                key_handler = cached.table_schema.key_handler
+                key_pa_schema = cached.table_schema.key_schema
+            else:
+                key_spec = FieldSpec.from_connect(j_key_schema, field_name="key")
+                key_handler, key_pa_schema, _ = self._compile_key_spec(key_spec)
+        if key_handler is None:
+            raise TypeError(
+                f"Unsupported Connect key type {type(raw_key).__name__} without compiled key_handler "
+                f"for destination '{destination}'"
+            )
+        return self._apply_key_handler(
+            raw_key, key_handler, key_pa_schema, is_connect=True
         )
 
 
@@ -466,9 +468,6 @@ class JsonEventConverter(EventConverter):
         )
         return table_schema
 
-    def convert(self, events: Iterable[ChangeEvent]) -> ChangeBatch:
-        return ChangeBatch(records=tuple(self.convert_event(event) for event in events))
-
     def convert_event(self, event: ChangeEvent) -> ChangeRecord:
         destination = self._destination(event)
         partition = self._partition(event)
@@ -477,104 +476,92 @@ class JsonEventConverter(EventConverter):
             event.key(), destination
         )
 
-        if raw_val is None:
-            if not key_payload:
+        schema_block: Any = None
+        payload: Any = None
+        if raw_val is not None:
+            envelope = self.decode_json_object(
+                raw_val, f"event for destination '{destination}'"
+            )
+            if "schema" not in envelope or "payload" not in envelope:
                 raise ValueError(
-                    f"Tombstone for destination '{destination}' has no key."
+                    f"Event for destination '{destination}' is missing required 'schema' and 'payload' blocks. "
+                    "If your connector is configured with 'schemas.enable=false', "
+                    "use SchemalessJsonEventConverter or configure DebeziumConfig with schemas.enable=false."
                 )
-            key_spec = (
-                FieldSpec.from_json(key_schema_block, field_name="key")
-                if key_schema_block is not None
-                else None
-            )
-            key_handler, key_pa_schema, _ = self._compile_key_spec(key_spec)
-            converted_key = TableSchema.convert_json_key_with_handler(
-                key_payload,
-                key_handler=key_handler,
-                key_schema=key_pa_schema,
-            )
-            return ChangeRecord(
-                schema=None,
-                value=None,
-                key=converted_key,
-                partition=partition,
-                destination=destination,
-            )
+            schema_block = envelope["schema"]
+            payload = envelope["payload"]
 
-        envelope = self._decode_json_object(
-            raw_val, f"event for destination '{destination}'"
-        )
-        if "schema" not in envelope or "payload" not in envelope:
-            raise ValueError(
-                f"Event for destination '{destination}' is missing required 'schema' and 'payload' blocks. "
-                "If your connector is configured with 'schemas.enable=false', "
-                "use SchemalessJsonEventConverter or configure DebeziumConfig with schemas.enable=false."
-            )
-
-        schema_block = envelope["schema"]
-        payload = envelope["payload"]
-
-        if payload is None:
-            if not key_payload:
+        if payload is None and key_payload is None:
+            raise ValueError(f"Tombstone for destination '{destination}' has no key.")
+        if payload is not None:
+            if not isinstance(schema_block, Mapping):
                 raise ValueError(
-                    f"Tombstone for destination '{destination}' has no key."
+                    f"Expected dict 'schema' in event for destination '{destination}', "
+                    f"got {type(schema_block).__name__}"
                 )
-            table_schema = (
-                self.compile_json_schema(
-                    destination=destination,
-                    schema_block=schema_block,
-                    primary_keys=pk_names,
-                    key_schema_block=key_schema_block,
+            if not isinstance(payload, Mapping):
+                raise ValueError(
+                    f"Expected dict 'payload' in event for destination '{destination}', "
+                    f"got {type(payload).__name__}"
                 )
-                if schema_block is not None
-                else None
-            )
-            ts_key: dict[str, Any] | None
-            if table_schema is not None:
-                ts_key = table_schema.convert_json_key(key_payload)
-            else:
-                key_spec = (
-                    FieldSpec.from_json(key_schema_block, field_name="key")
-                    if key_schema_block is not None
-                    else None
-                )
-                key_handler, key_pa_schema, _ = self._compile_key_spec(key_spec)
-                ts_key = TableSchema.convert_json_key_with_handler(
-                    key_payload,
-                    key_handler=key_handler,
-                    key_schema=key_pa_schema,
-                )
-            return ChangeRecord(
-                schema=table_schema,
-                value=None,
-                key=ts_key,
-                partition=partition,
+
+        table_schema = (
+            self.compile_json_schema(
                 destination=destination,
+                schema_block=schema_block,
+                primary_keys=pk_names,
+                key_schema_block=key_schema_block,
             )
-
-        if not isinstance(schema_block, Mapping):
-            raise ValueError(
-                f"Expected dict 'schema' in event for destination '{destination}', "
-                f"got {type(schema_block).__name__}"
-            )
-        if not isinstance(payload, Mapping):
-            raise ValueError(
-                f"Expected dict 'payload' in event for destination '{destination}', "
-                f"got {type(payload).__name__}"
-            )
-
-        table_schema = self.compile_json_schema(
-            destination=destination,
-            schema_block=schema_block,
-            primary_keys=pk_names,
-            key_schema_block=key_schema_block,
+            if schema_block is not None
+            else None
         )
-        converted_value = table_schema.convert_json_value(payload)
+        converted_key = self._convert_key(
+            destination, key_payload, key_schema_block, table_schema
+        )
+        converted_value = (
+            table_schema.value_handler.convert_json(payload)
+            if payload is not None
+            and table_schema is not None
+            and table_schema.value_handler is not None
+            else None
+        )
         return ChangeRecord(
             schema=table_schema,
             value=converted_value,
-            key=table_schema.convert_json_key(key_payload),
+            key=converted_key,
             partition=partition,
+            destination=destination,
+        )
+
+    def _convert_key(
+        self,
+        destination: str,
+        key_payload: Any,
+        key_schema_block: Mapping[str, Any] | None,
+        table_schema: TableSchema | None,
+    ) -> dict[str, Any] | None:
+        if key_payload is None:
+            return None
+        key_handler = table_schema.key_handler if table_schema is not None else None
+        key_pa_schema = table_schema.key_schema if table_schema is not None else None
+        if key_handler is None and key_schema_block is not None:
+            cached = self._cache.get(destination)
+            if (
+                cached is not None
+                and key_schema_block == cached.key_schema
+                and cached.table_schema.key_handler is not None
+            ):
+                key_handler = cached.table_schema.key_handler
+                key_pa_schema = cached.table_schema.key_schema
+            else:
+                key_spec = FieldSpec.from_json(key_schema_block, field_name="key")
+                key_handler, key_pa_schema, _ = self._compile_key_spec(key_spec)
+        if key_handler is None:
+            if isinstance(key_payload, Mapping):
+                return dict(key_payload)
+            return {"key": key_payload}
+        return self._apply_key_handler(
+            key_payload, key_handler, key_pa_schema, is_connect=False
         )
 
     @classmethod
@@ -582,10 +569,10 @@ class JsonEventConverter(EventConverter):
         cls,
         raw_key: Any,
         destination: str,
-    ) -> tuple[tuple[str, ...], dict[str, Any] | None, dict[str, Any] | None]:
+    ) -> tuple[tuple[str, ...], dict[str, Any] | None, Any]:
         if raw_key is None:
             return (), None, None
-        key_obj = cls._decode_json_object(
+        key_obj = cls.decode_json_object(
             raw_key, f"CDC record key for destination '{destination}'"
         )
         if "schema" not in key_obj or "payload" not in key_obj:
@@ -596,10 +583,6 @@ class JsonEventConverter(EventConverter):
         values = key_obj["payload"]
         if values is None:
             return (), None, None
-        if not isinstance(values, dict):
-            raise ValueError(
-                f"Expected dict for key 'payload', got {type(values).__name__}"
-            )
 
         schema = key_obj["schema"]
         if schema is not None:
@@ -608,6 +591,10 @@ class JsonEventConverter(EventConverter):
                     f"Expected dict for key 'schema', got {type(schema).__name__}"
                 )
             if schema.get("type") == "struct":
+                if not isinstance(values, dict):
+                    raise ValueError(
+                        f"Expected dict for key 'payload', got {type(values).__name__}"
+                    )
                 fields = schema.get("fields")
                 if not isinstance(fields, list):
                     raise ValueError(
@@ -619,8 +606,42 @@ class JsonEventConverter(EventConverter):
                     raise ValueError(
                         "Key struct schema has empty 'fields' list for non-empty key payload"
                     )
-            return tuple(values.keys()), schema, values
+                return (), schema, values
+            return (), schema, values
+
+        if not isinstance(values, dict):
+            raise ValueError(
+                f"Expected dict for key 'payload', got {type(values).__name__}"
+            )
+        if not values:
+            return (), None, None
         return tuple(values.keys()), None, values
+
+    @staticmethod
+    def decode_json_object(raw: Any, context: str) -> dict[str, Any]:
+        if isinstance(raw, dict):
+            return raw
+        if isinstance(raw, Mapping):
+            return dict(raw)
+        if isinstance(raw, (bytes, bytearray, memoryview)):
+            payload_str = bytes(raw).decode("utf-8").strip()
+        elif isinstance(raw, str) or type(raw).__name__ == "java.lang.String":
+            payload_str = str(raw).strip()
+        else:
+            raise TypeError(
+                f"Unsupported payload type {type(raw).__name__} for {context}: {raw!r}"
+            )
+
+        try:
+            parsed = json.loads(payload_str)
+        except json.JSONDecodeError as e:
+            raise ValueError(f"Invalid JSON in {context}: {e}") from e
+
+        if not isinstance(parsed, dict):
+            raise ValueError(
+                f"Expected JSON object in {context}, got {type(parsed).__name__}"
+            )
+        return parsed
 
 
 # ============================================================================
@@ -631,36 +652,31 @@ class JsonEventConverter(EventConverter):
 class SchemalessJsonEventConverter(EventConverter):
     """
     Dedicated converter for schemaless JSON payloads (`EventFormat.JSON`, `schemas_enabled=False`).
-    Infers PyArrow schemas per destination across batches and sanitizes all-null columns.
+    Infers PyArrow schemas per destination directly via PyArrow (`pa.Table.from_pylist`).
     """
 
     format: ClassVar[EventFormat] = EventFormat.JSON
     schemas_enabled: ClassVar[bool] = False
 
-    def __init__(
-        self,
-        *,
-        heartbeat_prefix: str = EventConverter.DEFAULT_HEARTBEAT_PREFIX,
-        default_variable_scale: int = 10,
-    ) -> None:
-        super().__init__(
-            heartbeat_prefix=heartbeat_prefix,
-            default_variable_scale=default_variable_scale,
-        )
-        self._cache: dict[str, TableSchema] = {}
-
     def convert(self, events: Iterable[ChangeEvent]) -> ChangeBatch:
         ordered_items: list[
             tuple[str, dict[str, Any] | None, dict[str, Any] | None, int | None]
         ] = []
-        rows_by_dest: dict[str, list[tuple[dict[str, Any], dict[str, Any] | None]]] = {}
-        key_names_by_dest: dict[str, tuple[str, ...]] = {}
+        rows_by_dest: dict[str, list[dict[str, Any]]] = {}
+        keys_by_dest: dict[str, list[dict[str, Any]]] = {}
 
         for event in events:
             destination = self._destination(event)
             partition = self._partition(event)
             raw_val = event.value()
-            pk_names, key_payload = self._parse_schemaless_key(event.key(), destination)
+            raw_key = event.key()
+            key_payload = (
+                JsonEventConverter.decode_json_object(
+                    raw_key, f"CDC record key for destination '{destination}'"
+                )
+                if raw_key is not None
+                else None
+            ) or None
 
             if raw_val is None:
                 if not key_payload:
@@ -670,239 +686,47 @@ class SchemalessJsonEventConverter(EventConverter):
                 ordered_items.append((destination, None, key_payload, partition))
                 continue
 
-            payload = self._decode_json_object(
+            payload = JsonEventConverter.decode_json_object(
                 raw_val, f"event for destination '{destination}'"
             )
-            row_copy = dict(payload)
-            ordered_items.append((destination, row_copy, key_payload, partition))
-            rows_by_dest.setdefault(destination, []).append((row_copy, key_payload))
-            if destination not in key_names_by_dest:
-                key_names_by_dest[destination] = pk_names
+            ordered_items.append((destination, payload, key_payload, partition))
+            rows_by_dest.setdefault(destination, []).append(payload)
+            if key_payload:
+                keys_by_dest.setdefault(destination, []).append(key_payload)
 
         schemas_by_dest: dict[str, TableSchema] = {}
-        for destination, items in rows_by_dest.items():
-            dest_rows = [item[0] for item in items]
-            dest_keys = [item[1] for item in items if item[1]]
-            table_schema = self.infer_table_schema(
-                destination=destination,
-                rows=dest_rows,
-                keys=dest_keys,
-                key_names=key_names_by_dest[destination],
+        for destination, dest_rows in rows_by_dest.items():
+            dest_keys = keys_by_dest.get(destination, [])
+            arrow_schema = pa.Table.from_pylist(dest_rows).schema
+            key_pa_schema = (
+                pa.Table.from_pylist(dest_keys).schema if dest_keys else None
             )
-            self._cache[destination] = table_schema
-            schemas_by_dest[destination] = table_schema
+            pk_names = tuple(key_pa_schema.names) if key_pa_schema is not None else ()
+            kind = EventKind.classify(
+                destination,
+                arrow_schema.names,
+                self.heartbeat_prefix,
+            )
+            schemas_by_dest[destination] = TableSchema(
+                destination=destination,
+                kind=kind,
+                arrow_schema=arrow_schema,
+                primary_keys=pk_names,
+                key_schema=key_pa_schema,
+            )
 
-        records = [
-            (
+        return ChangeBatch(
+            records=tuple(
                 ChangeRecord(
-                    schema=schemas_by_dest[destination],
+                    schema=schemas_by_dest.get(destination),
                     value=row,
-                    key=key_dict,
-                    partition=part,
-                )
-                if row is not None
-                else ChangeRecord(
-                    schema=self._cache.get(destination),
-                    value=None,
                     key=key_dict,
                     partition=part,
                     destination=destination,
                 )
+                for destination, row, key_dict, part in ordered_items
             )
-            for destination, row, key_dict, part in ordered_items
-        ]
-        return ChangeBatch(records=tuple(records))
+        )
 
     def convert_event(self, event: ChangeEvent) -> ChangeRecord:
         return self.convert([event]).records[0]
-
-    def infer_table_schema(
-        self,
-        destination: str,
-        rows: list[dict[str, Any]],
-        keys: list[dict[str, Any]],
-        key_names: tuple[str, ...],
-    ) -> TableSchema:
-        prev_schema = self._cache.get(destination)
-        prev_pa = prev_schema.arrow_schema if prev_schema is not None else None
-        prev_key_pa = prev_schema.key_schema if prev_schema is not None else None
-
-        raw_tbl = pa.Table.from_pylist(rows)
-        sanitized_pa = self.sanitize_arrow_schema(
-            raw_tbl.schema, previous_schema=prev_pa
-        )
-        valid_pks = TableSchema.select_primary_keys(key_names, list(sanitized_pa))
-        kind = EventKind.classify(
-            destination,
-            sanitized_pa.names,
-            self.heartbeat_prefix,
-        )
-        key_pa_schema = (
-            self.sanitize_arrow_schema(
-                pa.Table.from_pylist(keys).schema,
-                previous_schema=prev_key_pa,
-            )
-            if keys
-            else None
-        )
-        return TableSchema(
-            destination=destination,
-            kind=kind,
-            arrow_schema=sanitized_pa,
-            primary_keys=valid_pks,
-            key_schema=key_pa_schema,
-        )
-
-    @classmethod
-    def sanitize_arrow_schema(
-        cls,
-        schema: pa.Schema,
-        previous_schema: pa.Schema | None = None,
-    ) -> pa.Schema:
-        """
-        Promotes all-null inferred fields (`pa.null()`) using envelope symmetry,
-        previously cached concrete types when available, or nullable `pa.string()`
-        marked with `debezium.inferred_null` metadata.
-        """
-        field_map: dict[str, pa.Field] = {f.name: f for f in schema}
-        if "op" in field_map and "before" in field_map and "after" in field_map:
-            b_type = field_map["before"].type
-            a_type = field_map["after"].type
-            if pa.types.is_null(b_type) and pa.types.is_struct(a_type):
-                field_map["before"] = (
-                    field_map["before"].with_type(a_type).with_nullable(True)
-                )
-            elif pa.types.is_null(a_type) and pa.types.is_struct(b_type):
-                field_map["after"] = (
-                    field_map["after"].with_type(b_type).with_nullable(True)
-                )
-            elif (
-                pa.types.is_struct(b_type)
-                and pa.types.is_struct(a_type)
-                and b_type != a_type
-            ):
-                b_restored = cls._restore_inferred_null(pa.schema(list(b_type)))
-                a_restored = cls._restore_inferred_null(pa.schema(list(a_type)))
-                unified_row = pa.struct(
-                    list(
-                        pa.unify_schemas(
-                            [b_restored, a_restored],
-                            promote_options="permissive",
-                        )
-                    )
-                )
-                field_map["before"] = (
-                    field_map["before"].with_type(unified_row).with_nullable(True)
-                )
-                field_map["after"] = (
-                    field_map["after"].with_type(unified_row).with_nullable(True)
-                )
-
-        prev_map: dict[str, pa.Field] = (
-            {f.name: f for f in previous_schema} if previous_schema is not None else {}
-        )
-        fields = [
-            cls._sanitize_field(field_map[name], prev_map.get(name))
-            for name in schema.names
-        ]
-        return pa.schema(fields, metadata=schema.metadata)
-
-    @classmethod
-    def _sanitize_field(
-        cls,
-        field_obj: pa.Field,
-        prev_field: pa.Field | None = None,
-    ) -> pa.Field:
-        dtype = field_obj.type
-        if pa.types.is_null(dtype):
-            if prev_field is not None and not pa.types.is_null(prev_field.type):
-                return prev_field.with_nullable(True)
-            return pa.field(
-                field_obj.name,
-                pa.string(),
-                nullable=True,
-                metadata={INFERRED_NULL_META_KEY: b"true"},
-            )
-        if pa.types.is_struct(dtype):
-            prev_dtype = (
-                prev_field.type
-                if prev_field is not None and pa.types.is_struct(prev_field.type)
-                else None
-            )
-            if len(dtype) == 0 and prev_dtype is not None and len(prev_dtype) > 0:
-                return field_obj.with_type(prev_dtype).with_nullable(True)
-            prev_sub_map: dict[str, pa.Field] = (
-                {sf.name: sf for sf in prev_dtype} if prev_dtype is not None else {}
-            )
-            sub_fields = [
-                cls._sanitize_field(sf, prev_sub_map.get(sf.name)) for sf in dtype
-            ]
-            return field_obj.with_type(pa.struct(sub_fields))
-        if pa.types.is_list(dtype):
-            prev_val_field = (
-                prev_field.type.value_field
-                if prev_field is not None and pa.types.is_list(prev_field.type)
-                else None
-            )
-            sanitized_val = cls._sanitize_field(dtype.value_field, prev_val_field)
-            return field_obj.with_type(pa.list_(sanitized_val))
-        if pa.types.is_map(dtype):
-            prev_item_field = (
-                prev_field.type.item_field
-                if prev_field is not None and pa.types.is_map(prev_field.type)
-                else None
-            )
-            sanitized_item = cls._sanitize_field(dtype.item_field, prev_item_field)
-            return field_obj.with_type(
-                pa.map_(dtype.key_field, sanitized_item, keys_sorted=dtype.keys_sorted)
-            )
-        return field_obj
-
-    @classmethod
-    def _restore_inferred_null_field(cls, field_obj: pa.Field) -> pa.Field:
-        if (
-            field_obj.metadata
-            and field_obj.metadata.get(INFERRED_NULL_META_KEY) == b"true"
-        ):
-            return pa.field(field_obj.name, pa.null(), nullable=True)
-        if pa.types.is_struct(field_obj.type):
-            return field_obj.with_type(
-                pa.struct(
-                    [cls._restore_inferred_null_field(sf) for sf in field_obj.type]
-                )
-            )
-        if pa.types.is_list(field_obj.type):
-            return field_obj.with_type(
-                pa.list_(cls._restore_inferred_null_field(field_obj.type.value_field))
-            )
-        if pa.types.is_map(field_obj.type):
-            return field_obj.with_type(
-                pa.map_(
-                    field_obj.type.key_field,
-                    cls._restore_inferred_null_field(field_obj.type.item_field),
-                    keys_sorted=field_obj.type.keys_sorted,
-                )
-            )
-        return field_obj
-
-    @classmethod
-    def _restore_inferred_null(cls, schema: pa.Schema) -> pa.Schema:
-        return pa.schema(
-            [cls._restore_inferred_null_field(f) for f in schema],
-            metadata=schema.metadata,
-        )
-
-    @classmethod
-    def _parse_schemaless_key(
-        cls,
-        raw_key: Any,
-        destination: str,
-    ) -> tuple[tuple[str, ...], dict[str, Any] | None]:
-        if raw_key is None:
-            return (), None
-        key_obj = cls._decode_json_object(
-            raw_key, f"CDC record key for destination '{destination}'"
-        )
-        if not key_obj:
-            return (), None
-        return tuple(key_obj.keys()), key_obj

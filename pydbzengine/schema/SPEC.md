@@ -14,7 +14,7 @@ The subsystem is built around five foundational design decisions:
    At instantiation time, we already know from the engine and connector configuration whether the event wire format is **JSON** or **Connect**, and whether **schemas are enabled or disabled**. Because this is known upfront, we never need runtime tricks, payload peeking, or cross-mode fallback heuristics. Instantiation resolves directly to one of three dedicated converter classes:
    - **Connect Event Converter**: Strictly consumes in-memory Java Connect source records where Connect schemas are always present.
    - **JSON Event Converter**: Strictly consumes serialized JSON envelopes carrying both an explicit schema block and a payload block.
-   - **Schemaless JSON Event Converter**: Strictly consumes raw JSON payload objects when schemas are disabled, owning all batch schema inference and null-column sanitization logic.
+   - **Schemaless JSON Event Converter**: Strictly consumes raw JSON payload objects when schemas are disabled, owning batch schema inference directly via PyArrow.
 2. **Explicit, Separate Domain Handler Classes per Data Type Family**:
    Database change events contain mixed data types—scalar primitives (integers, floats, booleans, strings), temporal primitives (dates, times, timestamps, intervals/durations), fixed and variable-scale decimals, binary and bit-sets, maps, geospatial geometry types, vectors, and nested structures/arrays. Each family is modeled as its own dedicated handler class without dynamic post-initialization function-pointer swapping or cross-format fallback chains. Logical types are matched deterministically before generic struct or array compilation.
 3. **Apache Arrow as the Global Reusable Format via Table Batch**:
@@ -29,7 +29,7 @@ The subsystem is built around five foundational design decisions:
 - **Implemented**:
   1. Three dedicated converter classes (**Connect Event Converter**, **JSON Event Converter**, **Schemaless JSON Event Converter**) inheriting from an abstract **Event Converter** base class taking explicit runtime arguments (`heartbeat_prefix`, `default_variable_scale`) and exposing class-level `format` and `schemas_enabled` attributes alongside a `@cached_property` `registry`.
   2. Explicit domain handler classes per data type family, deterministic logical-type matching before generic structs/arrays, and strict separation of JSON conversion from Connect conversion.
-  3. Schemaless null-sanitization helpers encapsulated inside **Schemaless JSON Event Converter**, with no reverse Arrow-to-handler compilation on **Table Schema**.
+  3. Schemaless JSON batch inference encapsulated inside **Schemaless JSON Event Converter** via native PyArrow schema inference, with no reverse Arrow-to-handler compilation on **Table Schema**.
   4. **Change Record** exposing single enum properties for **Event Kind** (including **Tombstone**) and **Change Operation**, with tombstones processed through the standard pipeline.
   5. **Table Batch** serving as the sole Arrow Table materializer, while **Change Batch** preserves all converted records in arrival order.
   6. **Schema-Aware Change Handler** located in the schema package, extracting `format`, `schemas_enabled`, and `heartbeat_prefix` from Debezium `properties`, instantiating the matching **Event Converter**, and dispatching **Table Created**, **Schema Evolved**, and **Handle Table Batch**.
@@ -48,7 +48,7 @@ A factory or facade resolves the configuration once at instantiation time and re
    - **Execution**: Parses the JSON envelope, compiles the embedded value and key schema dictionaries once per destination into a cached **Table Schema**, and converts the JSON payload and key in a single pass through the compiled handler tree.
 3. **Schemaless JSON Event Converter**:
    - **Input Contract**: Consumes serialized raw JSON payload objects when schema inclusion is disabled.
-   - **Execution**: Groups non-null JSON payloads by destination across the batch, infers an Apache Arrow schema per destination, resolves all-null columns using envelope symmetry (mirroring before/after struct schemas), previously cached concrete field types for that destination, and nullable string fallback (tagged with inferred-null metadata for compatible future promotion), and produces a **Table Schema** without compiling unused field handler trees.
+   - **Execution**: Groups non-null JSON payloads by destination across the batch, infers an Apache Arrow schema per destination directly via `pa.Table.from_pylist(rows).schema`, and produces a **Table Schema** without compiling unused field handler trees or artificially rewriting `pa.null()` columns.
 
 ### 2. Dedicated Data Type Handler Families
 Each data type family is modeled as a distinct, self-contained handler class with an explicit Apache Arrow data type, a strict JSON conversion method (accepting only JSON wire types), and a strict Connect conversion method (accepting only Java Connect types):
@@ -142,26 +142,26 @@ Each data type family is modeled as a distinct, self-contained handler class wit
   4. **Map Handler** (including PostgreSQL Hstore) must enforce non-null scalar keys, convert JSON dicts (coercing stringified keys to declared scalar types) or key-value pair lists in JSON mode, and convert Java maps in Connect mode.
 
 ### Requirement 8: Schemaless JSON Inference Encapsulated in Schemaless Converter
-- **Goal**: Infer valid Apache Arrow schemas from schemaless JSON batches while keeping all schemaless inference and null-sanitization logic encapsulated inside the **Schemaless JSON Event Converter**.
+- **Goal**: Infer valid Apache Arrow schemas from schemaless JSON batches while keeping all schemaless inference logic lean and encapsulated inside the **Schemaless JSON Event Converter**.
 - **Status**: Implemented
 - **Specification Details**:
-  1. **Schemaless JSON Event Converter** must infer an Apache Arrow schema per destination from each batch of raw JSON payloads.
-  2. For Debezium envelope payloads (containing operation code, before state, and after state), if either before or after is all-null across the batch, it must mirror the struct schema from the populated side; if both are structs with differing field types, it must unify them permissively.
-  3. Any remaining all-null fields must reuse their known concrete type from the destination's previously cached schema if available, or fall back to a nullable string type tagged with inferred-null metadata so subsequent schema diffs recognize promotion to a concrete type as compatible.
+  1. **Schemaless JSON Event Converter** must infer an Apache Arrow schema per destination from each batch of raw JSON payloads directly via PyArrow (`pa.Table.from_pylist(rows).schema`).
+  2. For Debezium envelope payloads, **Table Schema** row-schema extraction must unify `before` and `after` struct schemas via `pa.unify_schemas(..., promote_options="permissive")`.
+  3. **Schema Diff** compatibility checks (`is_compatible`) must delegate to PyArrow's native C++ `pa.unify_schemas([new_s, old_s], promote_options="default")` so promotion of `pa.null()` fields to concrete types at any nesting depth is recognized as compatible without custom metadata tags.
 
-### Requirement 9: Key Conversion and Scalar Primary Key Resolution
-- **Goal**: Convert event keys using compiled key handlers and validate scalar primary key column names against the table schema.
+### Requirement 9: Key Conversion and Primary Key Resolution
+- **Goal**: Convert event keys using compiled key handlers inside the converters and resolve primary key column names from the key schema.
 - **Status**: Implemented
 - **Specification Details**:
-  1. In Connect and Schema-Enabled JSON modes, event keys must be converted using the compiled key handler (supporting struct keys, map keys, and single-field scalar keys). In Schemaless JSON mode, keys are parsed directly as JSON dictionaries.
-  2. Primary key column names must be matched against the table's row fields (inside before/after structs for envelopes, or top-level fields for flattened records) and validated to reject nested struct, list, or map types.
+  1. In Connect and Schema-Enabled JSON modes, event keys must be converted using the compiled key handler inside the respective converter (supporting struct keys, map keys, and single-field scalar keys wrapped as `{"key": value}`). In Schemaless JSON mode, keys are parsed directly as JSON dictionaries.
+  2. Primary key column names are derived directly from `key_schema.names` (or explicit `primary_keys`).
 
 ### Requirement 10: Single Enum Properties for Event Kind & Operation Type, and Standard Tombstone Processing
 - **Goal**: Keep **Change Record** simple and free of boolean wrapper bloat by exposing single enum properties for event category and operation type, and processing tombstones through the standard pipeline.
 - **Status**: Implemented
 - **Specification Details**:
   1. **Single Event Kind Enum Property**: **Change Record** must expose a single `kind` property returning an **Event Kind** enum with four values: **Data**, **Heartbeat**, **Schema Change**, and **Tombstone**. Redundant boolean wrapper properties (`is_data`, `is_heartbeat`, `is_schema_change`, `is_tombstone`) must not be defined.
-  2. **Single Change Operation Enum Property**: **Change Record** must expose a single `op` property returning a **Change Operation** enum (**Insert** for `'c'`, **Update** for `'u'`, **Delete** for `'d'`, **Read** for `'r'`, **Truncate** for `'t'`, **Message** for `'m'`, or null when absent/tombstone). Redundant boolean wrapper properties (`is_insert`, `is_update`, `is_delete`, `is_read`) must not be defined.
+  2. **Single Change Operation Enum Property**: **Change Record** must expose a single `op` property (reading `"op"` or `"__op"` for flattened records) returning a **Change Operation** enum (**Insert** for `'c'`, **Update** for `'u'`, **Delete** for `'d'`, **Read** for `'r'`, **Truncate** for `'t'`, **Message** for `'m'`, or null when absent/tombstone). Redundant boolean wrapper properties (`is_insert`, `is_update`, `is_delete`, `is_read`) must not be defined.
   3. **Minimal, Standard Tombstone Processing**: When an event's value or payload is null, the converter must not synthesize a fake key-backed value **Table Schema** or branch into special tombstone builders. It must simply set the record's **Event Kind** to **Tombstone**, extract the schema normally if present (allowing `schema` on the record to be null when the value is null), and convert the key normally.
   4. **Row State Accessors**: **Change Record** must expose properties for `before`, `after`, `source`, and active row `data` (returning `after` when present, `before` on delete, or the flat value dictionary for unwrapped events), without a single-record `to_arrow` method.
 
@@ -180,7 +180,7 @@ Each data type family is modeled as a distinct, self-contained handler class wit
   1. **Package Locality**: **Schema-Aware Change Handler** must reside in the schema subsystem (subclassing the engine's base change handler contract) so the core engine package has zero imports or dependencies on the schema subsystem.
   2. **Lifecycle Dispatch**: On each batch of raw engine events, the handler must convert the batch via its converter, iterate through the homogeneous **Table Batch** runs, track the active **Table Schema** per destination, and invoke:
      - **Table Created Hook**: Invoked the first time a **Table Schema** is observed for a destination.
-     - **Schema Evolved Hook**: Invoked whenever a destination's **Table Schema** changes from its previously tracked version, passing the new schema, old schema, and computed **Schema Diff**.
+     - **Schema Evolved Hook**: Invoked whenever a destination's **Table Schema** changes from its previously tracked version and `diff.has_changes` is `True`, passing the new schema, old schema, and computed **Schema Diff**.
      - **Handle Table Batch Hook**: Invoked for each homogeneous **Table Batch**.
 
 ---

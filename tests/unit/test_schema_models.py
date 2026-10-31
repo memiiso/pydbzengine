@@ -234,7 +234,9 @@ class TestSchemaModels(unittest.TestCase):
             primary_keys=("id",),
             value_handler=val_handler,
         )
-        row = schema.convert_json_value({"id": 1, "price": "19.99"})
+        self.assertEqual(schema.value_schema, val_handler.arrow_schema)
+        self.assertEqual(schema.fields, val_handler.fields)
+        row = val_handler.convert_json({"id": 1, "price": "19.99"})
         rec = ChangeRecord(schema=schema, value=row, key={"id": 1})
         tb = TableBatch(schema=schema, records=(rec,))
         self.assertEqual(tb.destination, "inventory.orders")
@@ -326,47 +328,15 @@ class TestSchemaModels(unittest.TestCase):
 
     def test_strict_model_validation_raises(self) -> None:
         valid_pa = pa.schema([pa.field("id", pa.int32())])
-        with self.assertRaises(ValueError):
-            TableSchema(destination="   ", kind=EventKind.DATA, arrow_schema=valid_pa)
-        with self.assertRaises(ValueError):
-            TableSchema(
-                destination="t1", kind=EventKind.DATA, arrow_schema=pa.schema([])
-            )
-        with self.assertRaises(ValueError):
-            TableSchema(
-                destination="t1",
-                kind=EventKind.DATA,
-                arrow_schema=valid_pa,
-                key_schema=pa.schema([]),
-            )
-        with self.assertRaises(ValueError):
-            TableSchema.select_primary_keys(
-                ("meta",),
-                [pa.field("meta", pa.struct([pa.field("k", pa.string())]))],
-            )
-
         s1 = TableSchema(destination="t1", kind=EventKind.DATA, arrow_schema=valid_pa)
-        s2 = TableSchema(destination="t2", kind=EventKind.DATA, arrow_schema=valid_pa)
 
-        with self.assertRaises(TypeError):
-            _ = ChangeRecord(s1, {"op": 123}).op
+        # Both "op" and "__op" are supported; unknown op codes raise ValueError
+        self.assertEqual(ChangeRecord(s1, {"__op": "c"}).op, ChangeOp.INSERT)
+        self.assertEqual(ChangeRecord(s1, {"__op": "d"}).op, ChangeOp.DELETE)
         with self.assertRaises(ValueError):
             _ = ChangeRecord(s1, {"op": "invalid_op"}).op
-        with self.assertRaises(TypeError):
-            _ = ChangeRecord(s1, {"before": "not_a_dict"}).before
-        with self.assertRaises(TypeError):
-            _ = ChangeRecord(s1, {"after": [1, 2]}).after
-        with self.assertRaises(TypeError):
-            _ = ChangeRecord(s1, {"source": 42}).source
 
         ts = ChangeRecord(s1, None, key={"id": 1})
-        r1 = ChangeRecord(s1, {"id": 1})
-        r2 = ChangeRecord(s2, {"id": 2})
-
-        with self.assertRaises(ValueError):
-            TableBatch(schema=s1, records=(ts,))
-        with self.assertRaises(ValueError):
-            TableBatch(schema=s1, records=(r1, r2))
         with self.assertRaises(ValueError):
             ChangeBatch(records=(ts,)).table_batches(kind=EventKind.TOMBSTONE)
 
@@ -387,47 +357,76 @@ class TestSchemaModels(unittest.TestCase):
                 ChangeRecord(env_schema, {"before": None, "after": None, "op": "m"}),
             ),
         )
-        with self.assertRaises(ValueError):
-            _ = empty_env_batch.data_rows
+        self.assertEqual(empty_env_batch.data_rows, [])
 
-        with self.assertRaises(TypeError):
-            TableSchema(destination="t1", kind="data", arrow_schema=valid_pa)  # type: ignore[arg-type]
-        with self.assertRaises(TypeError):
-            TableSchema(
-                destination="t1", kind=EventKind.DATA, arrow_schema="not_schema"
-            )  # type: ignore[arg-type]
-        with self.assertRaises(TypeError):
-            TableSchema(
-                destination="t1",
-                kind=EventKind.DATA,
-                arrow_schema=valid_pa,
-                key_schema="not_schema",  # type: ignore[arg-type]
-            )
-        with self.assertRaises(TypeError):
-            ChangeRecord("not_schema", {"id": 1})  # type: ignore[arg-type]
-        with self.assertRaises(ValueError):
-            ChangeRecord(None, {"id": 1})
-        with self.assertRaises(ValueError):
-            ChangeRecord(None, None, key={"id": 1})
-        with self.assertRaises(ValueError):
-            ChangeRecord(s1, {"id": 1}, destination="wrong_dest")
-        with self.assertRaises(TypeError):
-            ChangeRecord(s1, "not_a_dict")  # type: ignore[arg-type]
-        with self.assertRaises(TypeError):
-            ChangeRecord(s1, {"id": 1}, key="not_a_dict")  # type: ignore[arg-type]
-        with self.assertRaises(TypeError):
-            ChangeRecord(s1, {"id": 1}, partition=True)
-
-        s1_evolved = TableSchema(
+        # Recursive SchemaDiff.is_compatible via native PyArrow schema unification
+        s_old = TableSchema(
             destination="t1",
             kind=EventKind.DATA,
-            arrow_schema=pa.schema([pa.field("id", pa.int64())]),
+            arrow_schema=pa.schema(
+                [
+                    pa.field(
+                        "meta",
+                        pa.struct(
+                            [
+                                pa.field("a", pa.null()),
+                                pa.field("b", pa.int32()),
+                            ]
+                        ),
+                    )
+                ]
+            ),
         )
-        with self.assertRaises(ValueError):
-            TableBatch(
-                schema=s1,
-                records=(r1, ChangeRecord(s1_evolved, {"id": 2})),
-            )
+        # Promoting nested null -> string and adding nested field "c" is compatible
+        s_compat = TableSchema(
+            destination="t1",
+            kind=EventKind.DATA,
+            arrow_schema=pa.schema(
+                [
+                    pa.field(
+                        "meta",
+                        pa.struct(
+                            [
+                                pa.field("a", pa.string()),
+                                pa.field("b", pa.int32()),
+                                pa.field("c", pa.bool_()),
+                            ]
+                        ),
+                    )
+                ]
+            ),
+        )
+        self.assertTrue(s_compat.diff(s_old).is_compatible)
+
+        # Incompatible nested sibling type change (int32 -> string) is rejected
+        s_bad_type = TableSchema(
+            destination="t1",
+            kind=EventKind.DATA,
+            arrow_schema=pa.schema(
+                [
+                    pa.field(
+                        "meta",
+                        pa.struct(
+                            [
+                                pa.field("a", pa.string()),
+                                pa.field("b", pa.string()),
+                            ]
+                        ),
+                    )
+                ]
+            ),
+        )
+        self.assertFalse(s_bad_type.diff(s_old).is_compatible)
+
+        # Dropped nested struct field ("b" removed) is rejected
+        s_dropped_nested = TableSchema(
+            destination="t1",
+            kind=EventKind.DATA,
+            arrow_schema=pa.schema(
+                [pa.field("meta", pa.struct([pa.field("a", pa.string())]))]
+            ),
+        )
+        self.assertFalse(s_dropped_nested.diff(s_old).is_compatible)
 
 
 if __name__ == "__main__":

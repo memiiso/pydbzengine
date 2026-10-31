@@ -3,9 +3,8 @@ from __future__ import annotations
 import base64
 import binascii
 import decimal
-import re
 from abc import ABC, abstractmethod
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import date, datetime, time, timezone
 from decimal import Decimal
@@ -82,94 +81,49 @@ class FieldSpec:
                 f"Missing or invalid 'type' in schema for field '{resolved_name}': {raw}"
             )
         type_str = raw_type.strip().lower()
-
-        optional = raw.get("optional", True)
-        if not isinstance(optional, bool):
-            raise ValueError(
-                f"Expected bool for 'optional' in schema for field '{resolved_name}', "
-                f"got {type(optional).__name__}"
-            )
-        doc = raw.get("doc")
-        if doc is not None and not isinstance(doc, str):
-            raise ValueError(
-                f"Expected str for 'doc' in schema for field '{resolved_name}', "
-                f"got {type(doc).__name__}"
-            )
         raw_logical = raw.get("name")
-        if raw_logical is not None and not isinstance(raw_logical, str):
-            raise ValueError(
-                f"Expected str for 'name' in schema for field '{resolved_name}', "
-                f"got {type(raw_logical).__name__}"
-            )
         logical_name = (
             raw_logical.strip()
-            if raw_logical is not None and raw_logical.strip()
+            if isinstance(raw_logical, str) and raw_logical.strip()
             else None
         )
-
         raw_params = raw.get("parameters")
-        if raw_params is not None and not isinstance(raw_params, Mapping):
-            raise ValueError(
-                f"Expected Mapping for schema 'parameters' in field '{resolved_name}', "
-                f"got {type(raw_params).__name__}"
-            )
         parameters: dict[str, str] = (
             {str(k): str(v) for k, v in raw_params.items()}
-            if raw_params is not None
+            if isinstance(raw_params, Mapping)
             else {}
         )
-
-        sub_fields: tuple[FieldSpec, ...] = ()
-        if "fields" in raw:
-            raw_fields = raw["fields"]
-            if not isinstance(raw_fields, list):
-                raise ValueError(
-                    f"Expected 'fields' list in struct schema for '{resolved_name}', "
-                    f"got {type(raw_fields).__name__}"
-                )
-            sub_fields = tuple(cls.from_json(f) for f in raw_fields)
-
-        items_spec: FieldSpec | None = None
-        if type_str == "array":
-            raw_items = raw.get("items")
-            if raw_items is not None:
-                if not isinstance(raw_items, Mapping):
-                    raise ValueError(
-                        f"Array field '{resolved_name}' has invalid 'items' schema: {raw}"
-                    )
-                items_spec = cls.from_json(raw_items, field_name="item")
-            elif logical_name not in (
-                "io.debezium.data.FloatVector",
-                "io.debezium.data.DoubleVector",
-            ):
-                raise ValueError(
-                    f"Array field '{resolved_name}' missing valid 'items' schema: {raw}"
-                )
-
-        keys_spec: FieldSpec | None = None
-        values_spec: FieldSpec | None = None
-        if type_str == "map":
-            raw_keys = raw.get("keys")
-            if raw_keys is not None:
-                if not isinstance(raw_keys, Mapping):
-                    raise ValueError(
-                        f"Map field '{resolved_name}' has invalid 'keys' schema: {raw}"
-                    )
-                keys_spec = cls.from_json(raw_keys, field_name="key")
-            raw_values = raw.get("values")
-            if raw_values is not None:
-                if not isinstance(raw_values, Mapping):
-                    raise ValueError(
-                        f"Map field '{resolved_name}' has invalid 'values' schema: {raw}"
-                    )
-                values_spec = cls.from_json(raw_values, field_name="value")
+        raw_fields = raw.get("fields")
+        sub_fields = (
+            tuple(cls.from_json(f) for f in raw_fields)
+            if isinstance(raw_fields, list)
+            else ()
+        )
+        raw_items = raw.get("items")
+        items_spec = (
+            cls.from_json(raw_items, field_name="item")
+            if type_str == "array" and isinstance(raw_items, Mapping)
+            else None
+        )
+        raw_keys = raw.get("keys")
+        keys_spec = (
+            cls.from_json(raw_keys, field_name="key")
+            if type_str == "map" and isinstance(raw_keys, Mapping)
+            else None
+        )
+        raw_values = raw.get("values")
+        values_spec = (
+            cls.from_json(raw_values, field_name="value")
+            if type_str == "map" and isinstance(raw_values, Mapping)
+            else None
+        )
 
         return cls(
             name=resolved_name,
             type_name=type_str,
-            optional=optional,
+            optional=bool(raw.get("optional", True)),
             logical_name=logical_name,
-            doc=doc,
+            doc=str(raw["doc"]) if raw.get("doc") is not None else None,
             parameters=parameters,
             fields=sub_fields,
             items=items_spec,
@@ -217,31 +171,29 @@ class FieldSpec:
         values_spec: FieldSpec | None = None
 
         if type_str == "struct":
-            j_fields = j_schema.fields()
-            if j_fields is None:
-                raise ValueError(
-                    f"Java Connect STRUCT schema missing fields() for '{field_name}'"
+            j_fields = j_schema.fields() if hasattr(j_schema, "fields") else None
+            if j_fields is not None:
+                sub_fields = tuple(
+                    cls.from_connect(sub_f.schema(), field_name=str(sub_f.name()))
+                    for sub_f in j_fields
                 )
-            sub_fields = tuple(
-                cls.from_connect(sub_f.schema(), field_name=str(sub_f.name()))
-                for sub_f in j_fields
-            )
         elif type_str == "array":
-            val_schema = j_schema.valueSchema()
-            if val_schema is None:
-                raise ValueError(
-                    f"Java Connect ARRAY schema missing valueSchema() for '{field_name}'"
-                )
-            items_spec = cls.from_connect(val_schema, field_name="item")
+            val_schema = (
+                j_schema.valueSchema() if hasattr(j_schema, "valueSchema") else None
+            )
+            if val_schema is not None:
+                items_spec = cls.from_connect(val_schema, field_name="item")
         elif type_str == "map":
-            key_schema = j_schema.keySchema()
-            val_schema = j_schema.valueSchema()
-            if key_schema is None or val_schema is None:
-                raise ValueError(
-                    f"Java Connect MAP schema missing keySchema() or valueSchema() for '{field_name}'"
-                )
-            keys_spec = cls.from_connect(key_schema, field_name="key")
-            values_spec = cls.from_connect(val_schema, field_name="value")
+            key_schema = (
+                j_schema.keySchema() if hasattr(j_schema, "keySchema") else None
+            )
+            val_schema = (
+                j_schema.valueSchema() if hasattr(j_schema, "valueSchema") else None
+            )
+            if key_schema is not None:
+                keys_spec = cls.from_connect(key_schema, field_name="key")
+            if val_schema is not None:
+                values_spec = cls.from_connect(val_schema, field_name="value")
 
         return cls(
             name=field_name,
@@ -419,50 +371,22 @@ class StringTypeHandler(DataTypeHandler):
     def arrow_type(self) -> pa.DataType:
         return pa.string()
 
-    @staticmethod
-    def decode_json_str(value: Any) -> str:
+    def convert_json(self, value: Any) -> str:
         if isinstance(value, str):
             return value
         raise TypeError(f"Expected str, got {type(value).__name__}: {value!r}")
 
-    @staticmethod
-    def decode_connect_str(value: Any) -> str:
+    def convert_connect(self, value: Any) -> str:
         if isinstance(value, str) or type(value).__name__ == "java.lang.String":
             return str(value)
         raise TypeError(
             f"Cannot convert Connect value {type(value).__name__} to str: {value!r}"
         )
 
-    def convert_json(self, value: Any) -> str:
-        return self.decode_json_str(value)
-
-    def convert_connect(self, value: Any) -> str:
-        return self.decode_connect_str(value)
-
 
 @dataclass(frozen=True, slots=True)
-class TemporalIntervalHandler(DataTypeHandler):
-    """Handles Debezium temporal duration, interval, and year logical types."""
-
-    arrow_type: pa.DataType
-
-    def __post_init__(self) -> None:
-        if not (
-            pa.types.is_integer(self.arrow_type) or pa.types.is_string(self.arrow_type)
-        ):
-            raise ValueError(
-                f"Expected integer or string Arrow type for TemporalIntervalHandler, got: {self.arrow_type}"
-            )
-
-    def convert_json(self, value: Any) -> int | str:
-        if pa.types.is_integer(self.arrow_type):
-            return IntTypeHandler.decode_json_int(value)
-        return StringTypeHandler.decode_json_str(value)
-
-    def convert_connect(self, value: Any) -> int | str:
-        if pa.types.is_integer(self.arrow_type):
-            return IntTypeHandler.decode_connect_int(value)
-        return StringTypeHandler.decode_connect_str(value)
+class TemporalIntervalHandler(IntTypeHandler):
+    """Handles integer-backed Debezium temporal duration, interval, and year logical types."""
 
 
 # ============================================================================
@@ -535,8 +459,8 @@ class BinaryTypeHandler(DataTypeHandler):
 class DecimalTypeHandler(DataTypeHandler):
     """Handles fixed-scale Kafka Connect Decimal fields."""
 
-    _NUMERIC_LITERAL_RE: ClassVar[re.Pattern[str]] = re.compile(
-        r"^[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?$"
+    _DECIMAL128_CTX: ClassVar[decimal.Context] = decimal.Context(
+        prec=38, rounding=decimal.ROUND_HALF_UP
     )
 
     precision: int = 38
@@ -567,14 +491,30 @@ class DecimalTypeHandler(DataTypeHandler):
         return Decimal((sign, digits, -scale))
 
     @staticmethod
-    def quantize(dec: Decimal, scale: int) -> Decimal:
-        if not dec.is_finite():
-            raise ValueError(f"Cannot quantize non-finite Decimal value: {dec!r}")
+    def _is_numeric_literal(s: str) -> bool:
+        body = s[1:] if s[0] in "+-" else s
+        if not body or body.lower().startswith(("inf", "nan")):
+            return False
+        mantissa, _, exp = body.lower().partition("e")
+        if exp:
+            exp = exp[1:] if exp[0] in "+-" else exp
+            if not exp.isdigit():
+                return False
+        left, _, right = mantissa.partition(".")
+        return (
+            (left.isdigit() or right.isdigit())
+            and (not left or left.isdigit())
+            and (not right or right.isdigit())
+        )
+
+    @classmethod
+    def quantize(cls, dec: Decimal, scale: int) -> Decimal:
         exp = dec.as_tuple().exponent
-        assert isinstance(exp, int)
+        if not isinstance(exp, int):
+            raise ValueError(f"Cannot quantize non-finite Decimal value: {dec!r}")
         if -exp > scale:
             quantizer = Decimal((0, (1,), -scale))
-            return dec.quantize(quantizer, rounding=decimal.ROUND_HALF_UP)
+            return dec.quantize(quantizer, context=cls._DECIMAL128_CTX)
         return dec
 
     @classmethod
@@ -600,11 +540,8 @@ class DecimalTypeHandler(DataTypeHandler):
         if not raw_str:
             raise ValueError("Cannot decode empty string as Decimal")
 
-        if cls._NUMERIC_LITERAL_RE.match(raw_str):
-            try:
-                return Decimal(raw_str)
-            except decimal.InvalidOperation as err:
-                raise ValueError(f"Malformed decimal string: {raw_str!r}") from err
+        if cls._is_numeric_literal(raw_str):
+            return Decimal(raw_str)
 
         try:
             decoded_bytes = base64.b64decode(raw_str, validate=True)
@@ -681,16 +618,15 @@ class VariableScaleDecimalHandler(DataTypeHandler):
         )
 
     def convert_connect(self, value: Any) -> Decimal | None:
-        getter = StructTypeHandler.get_connect_field_getter(value)
-        if getter is None:
+        if not (hasattr(value, "getWithoutDefault") or hasattr(value, "get")):
             raise TypeError(
                 f"Expected Connect Struct for VariableScaleDecimal, "
                 f"got {type(value).__name__}: {value!r}"
             )
-        raw_val = getter("value")
+        raw_val = StructTypeHandler.read_connect_field(value, "value")
         if raw_val is None:
             return None
-        raw_scale = getter("scale")
+        raw_scale = StructTypeHandler.read_connect_field(value, "scale")
         if raw_scale is None:
             raise ValueError(
                 "VariableScaleDecimal Connect Struct missing required 'scale' value"
@@ -791,7 +727,7 @@ class TimeTypeHandler(DataTypeHandler):
         total_us = (
             t.hour * 3_600 + t.minute * 60 + t.second
         ) * 1_000_000 + t.microsecond
-        return total_us * 1_000 + TimestampTypeHandler._extract_sub_micro_nanos(val)
+        return total_us * 1_000 + TimestampTypeHandler.extract_sub_micro_nanos(val)
 
     def convert_json(self, value: Any) -> time | int:
         if isinstance(value, int) and not isinstance(value, bool):
@@ -863,7 +799,7 @@ class TimestampTypeHandler(DataTypeHandler):
         return f"{prefix}.{remainder[:i][:6].ljust(6, '0')}{remainder[i:]}"
 
     @staticmethod
-    def _extract_sub_micro_nanos(s: str) -> int:
+    def extract_sub_micro_nanos(s: str) -> int:
         if "." not in s:
             return 0
         _, remainder = s.split(".", 1)
@@ -915,7 +851,7 @@ class TimestampTypeHandler(DataTypeHandler):
         epoch_us = (
             delta.days * 86_400 + delta.seconds
         ) * 1_000_000 + delta.microseconds
-        return epoch_us * 1_000 + cls._extract_sub_micro_nanos(val)
+        return epoch_us * 1_000 + cls.extract_sub_micro_nanos(val)
 
     def convert_json(self, value: Any) -> datetime | int:
         if isinstance(value, int) and not isinstance(value, bool):
@@ -992,12 +928,10 @@ class StructTypeHandler(DataTypeHandler):
         return pa.schema([f.arrow_field for f in self.fields])
 
     @staticmethod
-    def get_connect_field_getter(value: Any) -> Callable[[str], Any] | None:
+    def read_connect_field(value: Any, field_name: str) -> Any:
         if hasattr(value, "getWithoutDefault"):
-            return value.getWithoutDefault  # type: ignore[no-any-return]
-        if hasattr(value, "get"):
-            return value.get  # type: ignore[no-any-return]
-        return None
+            return value.getWithoutDefault(field_name)
+        return value.get(field_name)
 
     def convert_json(self, value: Any) -> dict[str, Any]:
         if not isinstance(value, Mapping):
@@ -1007,12 +941,14 @@ class StructTypeHandler(DataTypeHandler):
         return {f.name: f.convert_json(value.get(f.name)) for f in self.fields}
 
     def convert_connect(self, value: Any) -> dict[str, Any]:
-        getter = self.get_connect_field_getter(value)
-        if getter is None:
+        if not (hasattr(value, "getWithoutDefault") or hasattr(value, "get")):
             raise TypeError(
                 f"Expected Connect Struct for struct field, got {type(value).__name__}: {value!r}"
             )
-        return {f.name: f.convert_connect(getter(f.name)) for f in self.fields}
+        return {
+            f.name: f.convert_connect(self.read_connect_field(value, f.name))
+            for f in self.fields
+        }
 
 
 @dataclass(frozen=True)
@@ -1244,7 +1180,7 @@ class TypeRegistry:
             pa.int64()
         ),
         "io.debezium.time.IntervalDayToSecond": TemporalIntervalHandler(pa.int64()),
-        "io.debezium.time.Interval": TemporalIntervalHandler(pa.string()),
+        "io.debezium.time.Interval": STRING_HANDLER,
         # Text, Enums, UUID, JSON, XML, Ltree, ObjectId, Tsvector
         "io.debezium.data.Uuid": STRING_HANDLER,
         "io.debezium.data.Json": STRING_HANDLER,

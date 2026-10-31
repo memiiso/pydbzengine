@@ -79,7 +79,8 @@ class SchemaAwareChangeHandler(BasePythonChangeHandler):
             elif new_schema != old_schema:
                 diff = new_schema.diff(old_schema)
                 self._schemas[dest] = new_schema
-                self.on_schema_evolved(new_schema, old_schema, diff)
+                if diff.has_changes:
+                    self.on_schema_evolved(new_schema, old_schema, diff)
             self.handle_table_batch(table_batch)
 
     def on_table_created(self, schema: TableSchema) -> None:
