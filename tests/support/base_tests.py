@@ -5,6 +5,8 @@ from pathlib import Path
 
 from tests.support.containers.iceberg import IcebergCatalogContainer
 from tests.support.containers.minio import MinioContainer
+from tests.support.containers.mongodb import MongoDbHelper
+from tests.support.containers.mysql import MySqlDbHelper
 from tests.support.containers.postgres import PostgresDbHelper
 
 
@@ -114,3 +116,36 @@ class BaseIcebergTest(BasePostgresqlTest):
         cls.rest_catalog.stop()
         cls.minio_container.stop()
         super().tearDownClass()
+
+
+class BaseMySqlTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        from pydbzengine.engine.jvm import ensure_jvm_started
+
+        test_conf_dir = (Path(__file__).resolve().parents[1] / "config").as_posix()
+        ensure_jvm_started(extra_classpaths=[test_conf_dir])
+        cls.mysql_db = MySqlDbHelper()
+        cls.mysql_db.start()
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        cls.mysql_db.stop()
+
+    def execute_on_source_db(self, sql: str) -> None:
+        self.mysql_db.execute_sql(sql=sql)
+
+
+class BaseMongoDbTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        from pydbzengine.engine.jvm import ensure_jvm_started
+
+        test_conf_dir = (Path(__file__).resolve().parents[1] / "config").as_posix()
+        ensure_jvm_started(extra_classpaths=[test_conf_dir])
+        cls.mongo_db = MongoDbHelper()
+        cls.mongo_db.start()
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        cls.mongo_db.stop()
