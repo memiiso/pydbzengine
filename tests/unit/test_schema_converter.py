@@ -15,7 +15,7 @@ from typing import Any
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from pydbzengine import EventFormat
+from pydbzengine import DebeziumConfig, EventFormat
 from pydbzengine.schema import (
     ArrayTypeHandler,
     BinaryTypeHandler,
@@ -882,6 +882,7 @@ class TestEventConverterAndTypeHandlers(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmpdir:
             handler = LakehouseParquetHandler(Path(tmpdir))
+            handler.configure(DebeziumConfig({}))
 
             price_b64 = base64.b64encode(
                 (4999).to_bytes(4, byteorder="big", signed=True)
@@ -1270,50 +1271,34 @@ class TestEventConverterAndTypeHandlers(unittest.TestCase):
         )
 
     def test_event_format_resolve_and_table_schema_domain_methods(self) -> None:
-        self.assertEqual(EventFormat.resolve(), EventFormat.JSON)
         self.assertEqual(
-            EventFormat.resolve({"format": EventFormat.CONNECT}),
+            EventFormat.resolve_from(EventFormat.CONNECT),
             EventFormat.CONNECT,
         )
         self.assertEqual(
-            EventFormat.resolve({"engine.format": "io.debezium.embedded.Connect"}),
+            EventFormat.resolve_from("io.debezium.embedded.Connect"),
             EventFormat.CONNECT,
         )
         self.assertEqual(
-            EventFormat.resolve({"format": "io.debezium.engine.format.Json"}),
+            EventFormat.resolve_from("io.debezium.engine.format.Json"),
             EventFormat.JSON,
         )
         self.assertEqual(
-            EventFormat.resolve({"engine.format": "connect"}),
+            EventFormat.resolve_from("connect"),
             EventFormat.CONNECT,
         )
         self.assertEqual(
-            EventFormat.resolve(
-                {"value.converter": "org.apache.kafka.connect.storage.ConnectConverter"}
+            EventFormat.resolve_from(
+                "org.apache.kafka.connect.storage.ConnectConverter"
             ),
             EventFormat.CONNECT,
         )
         self.assertEqual(
-            EventFormat.resolve(
-                {
-                    "value.converter": "org.apache.kafka.connect.json.JsonConverter",
-                    "key.converter": "org.apache.kafka.connect.json.JsonConverter",
-                }
-            ),
+            EventFormat.resolve_from("org.apache.kafka.connect.json.JsonConverter"),
             EventFormat.JSON,
         )
-        with self.assertRaisesRegex(
-            ValueError,
-            "Having two different formats for event .* and key .* is not supported",
-        ):
-            EventFormat.resolve(
-                {
-                    "value.converter": "org.apache.kafka.connect.json.JsonConverter",
-                    "key.converter": "org.apache.kafka.connect.storage.ConnectConverter",
-                }
-            )
         with self.assertRaises(ValueError):
-            EventFormat.resolve({"format": "invalid_format"})
+            EventFormat.resolve_from("invalid_format")
 
         # TableSchema compiled via JsonEventConverter binds value_handler and key_handler
         schema = self.converter.compile_json_schema(

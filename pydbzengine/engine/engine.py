@@ -3,13 +3,14 @@ from __future__ import annotations
 from functools import cached_property
 from typing import TYPE_CHECKING, Any
 
+from pydbzengine.engine.base import BasePythonChangeHandler, EventFormat
+from pydbzengine.engine.config import DebeziumConfig
 from pydbzengine.logger import LoggingMixin
 
 if TYPE_CHECKING:
     from types import TracebackType
 
     from pydbzengine.engine._jvm import PythonChangeConsumer
-    from pydbzengine.engine.base import BasePythonChangeHandler
 
 
 class DebeziumEngine(LoggingMixin):
@@ -19,9 +20,9 @@ class DebeziumEngine(LoggingMixin):
 
     def __init__(
         self,
-        properties: dict[str, Any] | Any,
+        properties: dict[str, Any],
         handler: BasePythonChangeHandler,
-        format: str | Any = "json",
+        format: str | EventFormat | None = None,
         jvm_opts: list[str] | None = None,
         extra_classpaths: list[str] | None = None,
         jvm_path: str | None = None,
@@ -29,18 +30,19 @@ class DebeziumEngine(LoggingMixin):
         """Initializes the Debezium embedded engine."""
         if properties is None:
             raise ValueError("Please provide debezium config properties!")
-        if handler is None:
+        if not isinstance(handler, BasePythonChangeHandler):
             raise ValueError(
                 "Please provide handler class, see example class `pydbzengine.BasePythonChangeHandler`!"
             )
 
-        self.properties = properties
         self.handler = handler
-        self.format = format
         self.jvm_opts = jvm_opts
         self.extra_classpaths = extra_classpaths
         self.jvm_path = jvm_path
         self._engine: Any = None
+        self.config = DebeziumConfig(properties=properties, format=format)
+
+        self.handler.configure(config=self.config)
 
     @cached_property
     def consumer(self) -> PythonChangeConsumer:
@@ -53,16 +55,9 @@ class DebeziumEngine(LoggingMixin):
         self._ensure_jvm_started()
         from pydbzengine.engine._jvm import EngineFormat
 
-        if isinstance(self.format, str):
-            fmt_str = self.format.strip().lower()
-            if fmt_str == "connect":
-                return EngineFormat.CONNECT
-            elif fmt_str == "json":
-                return EngineFormat.JSON
-            raise ValueError(
-                f"Unsupported format: '{self.format}'. Must be 'json', 'connect', or an EngineFormat instance."
-            )
-        return self.format
+        if self.config.format is EventFormat.CONNECT:
+            return EngineFormat.CONNECT
+        return EngineFormat.JSON
 
     def _ensure_jvm_started(self) -> None:
         from pydbzengine.engine.jvm import ensure_jvm_started
@@ -80,11 +75,8 @@ class DebeziumEngine(LoggingMixin):
         engine_format = self._resolve_format()
 
         java_props = JProperties()
-        if isinstance(self.properties, dict):
-            for key, value in self.properties.items():
-                java_props.setProperty(str(key), str(value))
-        else:
-            java_props = self.properties
+        for key, value in self.config.properties.items():
+            java_props.setProperty(str(key), str(value))
 
         return (
             JDebeziumEngine.create(engine_format)
@@ -140,7 +132,7 @@ class DebeziumJsonEngine(DebeziumEngine):
 
     def __init__(
         self,
-        properties: dict[str, Any] | Any,
+        properties: dict[str, Any],
         handler: BasePythonChangeHandler,
         jvm_opts: list[str] | None = None,
         extra_classpaths: list[str] | None = None,

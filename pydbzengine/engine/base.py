@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
 from enum import Enum
-from typing import Any, ClassVar, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from pydbzengine.logger import LoggingMixin
+
+if TYPE_CHECKING:
+    from pydbzengine.engine.config import DebeziumConfig
 
 
 class EventFormat(str, Enum):
@@ -15,14 +18,15 @@ class EventFormat(str, Enum):
     CONNECT = "connect"
 
     @classmethod
-    def _parse(cls, candidate: Any) -> EventFormat:
-        if isinstance(candidate, cls):
-            return candidate
-        if not isinstance(candidate, str):
+    def resolve_from(cls, format: str | EventFormat) -> EventFormat:
+        """Resolves an EventFormat from a string or enum value."""
+        if isinstance(format, cls):
+            return format
+        if not isinstance(format, str):
             raise TypeError(
-                f"Expected EventFormat or str for format, got {type(candidate).__name__}: {candidate!r}"
+                f"Expected EventFormat or str for format, got {type(format).__name__}: {format!r}"
             )
-        fmt_str = candidate.strip().lower()
+        fmt_str = format.strip().lower()
         if fmt_str in (
             "json",
             "io.debezium.engine.format.json",
@@ -35,73 +39,7 @@ class EventFormat(str, Enum):
             "org.apache.kafka.connect.storage.connectconverter",
         ):
             return cls.CONNECT
-        raise ValueError(f"Unsupported event format: {candidate!r}")
-
-    @classmethod
-    def resolve(
-        cls,
-        properties: Mapping[str, Any] | None = None,
-    ) -> EventFormat:
-        if properties is not None and not isinstance(properties, Mapping):
-            raise TypeError(
-                f"Expected Mapping for properties, got {type(properties).__name__}"
-            )
-        props = properties if properties is not None else {}
-
-        general_fmt: EventFormat | None = None
-        for key in ("format", "engine.format", "converter.format", "converter.class"):
-            if key in props:
-                general_fmt = cls._parse(props[key])
-                break
-
-        value_fmt: EventFormat | None = None
-        for key in (
-            "value.format",
-            "format.value",
-            "value.converter",
-            "value.converter.class",
-        ):
-            if key in props:
-                value_fmt = cls._parse(props[key])
-                break
-
-        key_fmt: EventFormat | None = None
-        for key in (
-            "key.format",
-            "format.key",
-            "key.converter",
-            "key.converter.class",
-        ):
-            if key in props:
-                key_fmt = cls._parse(props[key])
-                break
-
-        if general_fmt is None and value_fmt is None and key_fmt is None:
-            return cls.JSON
-
-        effective_val = value_fmt if value_fmt is not None else general_fmt
-        effective_key = key_fmt if key_fmt is not None else general_fmt
-
-        if (
-            effective_val is not None
-            and effective_key is not None
-            and effective_val is not effective_key
-        ):
-            raise ValueError(
-                f"Having two different formats for event ({effective_val.value!r}) "
-                f"and key ({effective_key.value!r}) is not supported."
-            )
-        if (
-            general_fmt is not None
-            and effective_val is not None
-            and general_fmt is not effective_val
-        ):
-            raise ValueError(
-                f"Conflicting format configuration in properties: engine format "
-                f"{general_fmt.value!r} does not match converter format {effective_val.value!r}."
-            )
-
-        return effective_val if effective_val is not None else effective_key  # type: ignore[return-value]
+        raise ValueError(f"Unsupported format: {format!r}")
 
 
 class RecordCommitter(ABC):
@@ -161,7 +99,12 @@ class BasePythonChangeHandler(ABC, LoggingMixin):
         contract expected by `PythonChangeConsumer` (DebeziumEngine$ChangeConsumer).
     """
 
-    DEFAULT_HEARTBEAT_PREFIX: ClassVar[str] = "__debezium-heartbeat"
+    def configure(self, config: DebeziumConfig) -> None:
+        """
+        Lifecycle hook invoked by DebeziumEngine to bind the engine configuration
+        into the handler.
+        """
+        pass
 
     def handleJsonBatch(self, records: list[ChangeEvent]) -> None:
         """

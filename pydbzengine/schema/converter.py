@@ -10,10 +10,10 @@ from typing import Any, ClassVar
 import pyarrow as pa
 
 from pydbzengine.engine.base import (
-    BasePythonChangeHandler,
     ChangeEvent,
     EventFormat,
 )
+from pydbzengine.engine.config import DebeziumConfig
 from pydbzengine.schema.models import (
     INFERRED_NULL_META_KEY,
     ChangeBatch,
@@ -56,9 +56,7 @@ class _CachedSchema:
 class EventConverter(ABC):
     """Base contract for schema-driven CDC event converters."""
 
-    DEFAULT_HEARTBEAT_PREFIX: ClassVar[str] = (
-        BasePythonChangeHandler.DEFAULT_HEARTBEAT_PREFIX
-    )
+    DEFAULT_HEARTBEAT_PREFIX: ClassVar[str] = DebeziumConfig.DEFAULT_HEARTBEAT_PREFIX
     format: ClassVar[EventFormat]
     schemas_enabled: ClassVar[bool]
 
@@ -83,6 +81,33 @@ class EventConverter(ABC):
             )
         self.heartbeat_prefix: str = heartbeat_prefix.strip()
         self.default_variable_scale: int = default_variable_scale
+
+    @classmethod
+    def from_config(
+        cls,
+        config: DebeziumConfig,
+        *,
+        default_variable_scale: int = 10,
+    ) -> EventConverter:
+        """Instantiates the concrete EventConverter matching the DebeziumConfig."""
+        if not isinstance(config, DebeziumConfig):
+            raise TypeError(
+                f"Expected DebeziumConfig for config, got {type(config).__name__}"
+            )
+        if config.format is EventFormat.CONNECT:
+            return ConnectEventConverter(
+                heartbeat_prefix=config.heartbeat_prefix,
+                default_variable_scale=default_variable_scale,
+            )
+        if config.schemas_enabled:
+            return JsonEventConverter(
+                heartbeat_prefix=config.heartbeat_prefix,
+                default_variable_scale=default_variable_scale,
+            )
+        return SchemalessJsonEventConverter(
+            heartbeat_prefix=config.heartbeat_prefix,
+            default_variable_scale=default_variable_scale,
+        )
 
     @cached_property
     def registry(self) -> TypeRegistry:

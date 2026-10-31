@@ -1,6 +1,10 @@
 from unittest import TestCase
 
-from pydbzengine import DebeziumEngine, DebeziumJsonEngine
+from pydbzengine import (
+    BasePythonChangeHandler,
+    DebeziumEngine,
+    DebeziumJsonEngine,
+)
 from pydbzengine.handlers.dlt import DltChangeHandler
 from pydbzengine.handlers.iceberg import IcebergChangeHandler
 from pydbzengine.logger import LoggingMixin
@@ -36,15 +40,15 @@ class TestLoggingMixin(TestCase):
         self.assertEqual(obj.log.name, "custom.override.Logger")
 
     def test_engine_inherits_logging(self) -> None:
-        class DummyHandler:
+        class DummyHandler(BasePythonChangeHandler):
             pass
 
-        engine = DebeziumEngine(properties={}, handler=DummyHandler())  # type: ignore[arg-type]
+        engine = DebeziumEngine(properties={}, handler=DummyHandler())
         expected = f"{DebeziumEngine.__module__}.{DebeziumEngine.__qualname__}"
         self.assertEqual(engine.logger.name, expected)
         self.assertEqual(engine.log.name, expected)
 
-        json_engine = DebeziumJsonEngine(properties={}, handler=DummyHandler())  # type: ignore[arg-type]
+        json_engine = DebeziumJsonEngine(properties={}, handler=DummyHandler())
         json_expected = (
             f"{DebeziumJsonEngine.__module__}.{DebeziumJsonEngine.__qualname__}"
         )

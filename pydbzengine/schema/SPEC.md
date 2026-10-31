@@ -82,10 +82,10 @@ Each data type family is modeled as a distinct, self-contained handler class wit
 ## 3. Detailed Requirements
 
 ### Requirement 1: Three Dedicated Converter Classes & Deterministic Instantiation
-- **Goal**: Resolve the wire format and schema mode once in the change handler or via explicit converter subclass instantiation and bind to one of three dedicated converter classes with zero runtime format guessing or cross-mode fallbacks.
+- **Goal**: Resolve the wire format and schema mode once in the change handler or via automatic engine-to-handler configuration binding and bind to one of three dedicated converter classes with zero runtime format guessing or cross-mode fallbacks.
 - **Status**: Implemented
 - **Specification Details**:
-  1. **Schema-Aware Change Handler** extracts wire format (**JSON** vs. **Connect**), schema flag (**enabled** vs. **disabled**), and heartbeat topic prefix from Debezium configuration `properties` and passes explicit typed arguments (`heartbeat_prefix`, `default_variable_scale`) down to the concrete **Event Converter** subclass. **Event Converter** itself holds no raw `properties` dictionary.
+  1. **Automatic Configuration Binding**: `DebeziumEngine` wraps connector `properties` and `format` into a centralized `DebeziumConfig` instance (which resolves wire format, `schemas_enabled`, and `heartbeat_prefix`) and automatically configures attached handlers via the `handler.configure(config=self.config)` lifecycle hook. **Schema-Aware Change Handler** initializes `self.converter` to `None` in `__init__` and delegates `configure(config)` to `EventConverter.from_config(config=config, ...)`, which instantiates the matching concrete **Event Converter** subclass. Neither **Schema-Aware Change Handler** nor **Event Converter** stores raw `properties`.
   2. Three dedicated converter classes are provided:
      - **Connect Event Converter**: Used when the format is Connect (`format = EventFormat.CONNECT`, `schemas_enabled = True`). Strictly requires incoming events to provide a Java Connect source record with a valid Java schema (unless the value is null).
      - **JSON Event Converter**: Used when the format is JSON and schemas are enabled (`format = EventFormat.JSON`, `schemas_enabled = True`). Strictly requires incoming non-null JSON values and keys to contain explicit schema and payload blocks, failing fast if either block is missing.
