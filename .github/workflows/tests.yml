@@ -9,7 +9,6 @@ on:
       - '.idea/**'
       - '.run/**'
   pull_request:
-    branches: [ main ]
     paths-ignore:
       - '.idea/**'
       - '.run/**'
