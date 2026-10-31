@@ -1293,6 +1293,25 @@ class TestEventConverterAndTypeHandlers(unittest.TestCase):
             ),
             EventFormat.CONNECT,
         )
+        self.assertEqual(
+            EventFormat.resolve(
+                {
+                    "value.converter": "org.apache.kafka.connect.json.JsonConverter",
+                    "key.converter": "org.apache.kafka.connect.json.JsonConverter",
+                }
+            ),
+            EventFormat.JSON,
+        )
+        with self.assertRaisesRegex(
+            ValueError,
+            "Having two different formats for event .* and key .* is not supported",
+        ):
+            EventFormat.resolve(
+                {
+                    "value.converter": "org.apache.kafka.connect.json.JsonConverter",
+                    "key.converter": "org.apache.kafka.connect.storage.ConnectConverter",
+                }
+            )
         with self.assertRaises(ValueError):
             EventFormat.resolve({"format": "invalid_format"})
 

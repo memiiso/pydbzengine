@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from functools import cached_property
 from typing import Any
 
 from pydbzengine.engine.base import (
@@ -9,7 +8,12 @@ from pydbzengine.engine.base import (
     ChangeEvent,
     EventFormat,
 )
-from pydbzengine.schema.converter import EventConverter
+from pydbzengine.schema.converter import (
+    ConnectEventConverter,
+    EventConverter,
+    JsonEventConverter,
+    SchemalessJsonEventConverter,
+)
 from pydbzengine.schema.models import (
     ChangeBatch,
     SchemaDiff,
@@ -39,28 +43,107 @@ class SchemaAwareChangeHandler(BasePythonChangeHandler):
         converter: EventConverter | None = None,
     ) -> None:
         super().__init__()
+        if properties is not None and not isinstance(properties, Mapping):
+            raise TypeError(
+                f"Expected Mapping for properties, got {type(properties).__name__}"
+            )
         if converter is not None and not isinstance(converter, EventConverter):
             raise TypeError(
                 f"Expected EventConverter for converter, got {type(converter).__name__}"
             )
-        self.converter: EventConverter = (
-            converter
-            if converter is not None
-            else EventConverter.from_properties(
-                properties=properties,
-                default_variable_scale=default_variable_scale,
-            )
+        self.properties: Mapping[str, Any] = (
+            properties if properties is not None else {}
         )
-        self.properties: Mapping[str, Any] = self.converter.properties
+        if converter is not None:
+            self.converter: EventConverter = converter
+            self.format: EventFormat = converter.format
+            self.schemas_enabled: bool = converter.schemas_enabled
+            self.heartbeat_prefix: str = converter.heartbeat_prefix
+            self.default_variable_scale: int = converter.default_variable_scale
+        else:
+            self.format = EventFormat.resolve(self.properties)
+            self.schemas_enabled = (
+                True
+                if self.format is EventFormat.CONNECT
+                else self._resolve_schemas_enabled(self.properties)
+            )
+            self.heartbeat_prefix = self._resolve_heartbeat_prefix(self.properties)
+            self.default_variable_scale = default_variable_scale
+            self.converter = self._build_converter()
         self._schemas: dict[str, TableSchema] = {}
 
-    @cached_property
-    def format(self) -> EventFormat:
-        return self.converter.format
+    def _build_converter(self) -> EventConverter:
+        if self.format is EventFormat.CONNECT:
+            return ConnectEventConverter(
+                heartbeat_prefix=self.heartbeat_prefix,
+                default_variable_scale=self.default_variable_scale,
+            )
+        if self.schemas_enabled:
+            return JsonEventConverter(
+                heartbeat_prefix=self.heartbeat_prefix,
+                default_variable_scale=self.default_variable_scale,
+            )
+        return SchemalessJsonEventConverter(
+            heartbeat_prefix=self.heartbeat_prefix,
+            default_variable_scale=self.default_variable_scale,
+        )
 
-    @cached_property
-    def schemas_enabled(self) -> bool:
-        return self.converter.schemas_enabled
+    @classmethod
+    def _resolve_heartbeat_prefix(cls, props: Mapping[str, Any]) -> str:
+        raw_prefix = props.get("topic.heartbeat.prefix", cls.DEFAULT_HEARTBEAT_PREFIX)
+        if not isinstance(raw_prefix, str) or not raw_prefix.strip():
+            raise ValueError(
+                f"topic.heartbeat.prefix must be a non-empty string, got {raw_prefix!r}"
+            )
+        return raw_prefix.strip()
+
+    @staticmethod
+    def _parse_bool_prop(props: Mapping[str, Any], key: str) -> bool:
+        val = props[key]
+        if isinstance(val, bool):
+            return val
+        if isinstance(val, str):
+            norm = val.strip().lower()
+            if norm in ("true", "false"):
+                return norm == "true"
+        raise ValueError(f"Invalid boolean value for {key}: {val!r}")
+
+    @classmethod
+    def _resolve_schemas_enabled(cls, props: Mapping[str, Any]) -> bool:
+        general_enabled: bool | None = None
+        for key in ("converter.schemas.enable", "schemas.enable"):
+            if key in props:
+                general_enabled = cls._parse_bool_prop(props, key)
+                break
+
+        val_enabled = (
+            cls._parse_bool_prop(props, "value.converter.schemas.enable")
+            if "value.converter.schemas.enable" in props
+            else None
+        )
+        key_enabled = (
+            cls._parse_bool_prop(props, "key.converter.schemas.enable")
+            if "key.converter.schemas.enable" in props
+            else None
+        )
+
+        if general_enabled is None and val_enabled is None and key_enabled is None:
+            return True
+
+        effective_val = val_enabled if val_enabled is not None else general_enabled
+        effective_key = key_enabled if key_enabled is not None else general_enabled
+
+        if (
+            effective_val is not None
+            and effective_key is not None
+            and effective_val != effective_key
+        ):
+            raise ValueError(
+                "Having two different schema configurations for event "
+                f"(schemas.enable={effective_val}) and key (schemas.enable={effective_key}) is not supported."
+            )
+
+        return effective_val if effective_val is not None else effective_key  # type: ignore[return-value]
 
     @property
     def schemas(self) -> dict[str, TableSchema]:

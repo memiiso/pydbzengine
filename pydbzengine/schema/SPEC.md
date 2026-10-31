@@ -27,12 +27,12 @@ The subsystem is built around five foundational design decisions:
 
 ### Implementation Status Summary
 - **Implemented**:
-  1. Three dedicated converter classes (**Connect Event Converter**, **JSON Event Converter**, **Schemaless JSON Event Converter**) inheriting from an abstract **Event Converter** base class with a `from_properties` factory method and `@cached_property` configuration accessors (`format`, `schemas_enabled`, `heartbeat_prefix`).
+  1. Three dedicated converter classes (**Connect Event Converter**, **JSON Event Converter**, **Schemaless JSON Event Converter**) inheriting from an abstract **Event Converter** base class taking explicit runtime arguments (`heartbeat_prefix`, `default_variable_scale`) and exposing class-level `format` and `schemas_enabled` attributes alongside a `@cached_property` `registry`.
   2. Explicit domain handler classes per data type family, deterministic logical-type matching before generic structs/arrays, and strict separation of JSON conversion from Connect conversion.
   3. Schemaless null-sanitization helpers encapsulated inside **Schemaless JSON Event Converter**, with no reverse Arrow-to-handler compilation on **Table Schema**.
   4. **Change Record** exposing single enum properties for **Event Kind** (including **Tombstone**) and **Change Operation**, with tombstones processed through the standard pipeline.
   5. **Table Batch** serving as the sole Arrow Table materializer, while **Change Batch** preserves all converted records in arrival order.
-  6. **Schema-Aware Change Handler** located in the schema package, resolving `format` and `schemas_enabled` via `@cached_property` and dispatching **Table Created**, **Schema Evolved**, and **Handle Table Batch**.
+  6. **Schema-Aware Change Handler** located in the schema package, extracting `format`, `schemas_enabled`, and `heartbeat_prefix` from Debezium `properties`, instantiating the matching **Event Converter**, and dispatching **Table Created**, **Schema Evolved**, and **Handle Table Batch**.
 
 ---
 
@@ -82,10 +82,10 @@ Each data type family is modeled as a distinct, self-contained handler class wit
 ## 3. Detailed Requirements
 
 ### Requirement 1: Three Dedicated Converter Classes & Deterministic Instantiation
-- **Goal**: Resolve the wire format and schema mode once from configuration properties or explicit subclass instantiation and bind to one of three dedicated converter classes with zero runtime format guessing or cross-mode fallbacks.
+- **Goal**: Resolve the wire format and schema mode once in the change handler or via explicit converter subclass instantiation and bind to one of three dedicated converter classes with zero runtime format guessing or cross-mode fallbacks.
 - **Status**: Implemented
 - **Specification Details**:
-  1. The abstract **Event Converter** base class provides `@cached_property` implementations for wire format (**JSON** vs. **Connect**), schema flag (**enabled** vs. **disabled**), and heartbeat topic prefix resolved from engine configuration properties, along with a `from_properties` factory classmethod that returns the matching concrete converter subclass.
+  1. **Schema-Aware Change Handler** extracts wire format (**JSON** vs. **Connect**), schema flag (**enabled** vs. **disabled**), and heartbeat topic prefix from Debezium configuration `properties` and passes explicit typed arguments (`heartbeat_prefix`, `default_variable_scale`) down to the concrete **Event Converter** subclass. **Event Converter** itself holds no raw `properties` dictionary.
   2. Three dedicated converter classes are provided:
      - **Connect Event Converter**: Used when the format is Connect (`format = EventFormat.CONNECT`, `schemas_enabled = True`). Strictly requires incoming events to provide a Java Connect source record with a valid Java schema (unless the value is null).
      - **JSON Event Converter**: Used when the format is JSON and schemas are enabled (`format = EventFormat.JSON`, `schemas_enabled = True`). Strictly requires incoming non-null JSON values and keys to contain explicit schema and payload blocks, failing fast if either block is missing.

@@ -9,7 +9,11 @@ from typing import Any, ClassVar
 
 import pyarrow as pa
 
-from pydbzengine.engine.base import ChangeEvent, EventFormat
+from pydbzengine.engine.base import (
+    BasePythonChangeHandler,
+    ChangeEvent,
+    EventFormat,
+)
 from pydbzengine.schema.models import (
     INFERRED_NULL_META_KEY,
     ChangeBatch,
@@ -52,88 +56,37 @@ class _CachedSchema:
 class EventConverter(ABC):
     """Base contract for schema-driven CDC event converters."""
 
-    DEFAULT_HEARTBEAT_PREFIX: ClassVar[str] = "__debezium-heartbeat"
+    DEFAULT_HEARTBEAT_PREFIX: ClassVar[str] = (
+        BasePythonChangeHandler.DEFAULT_HEARTBEAT_PREFIX
+    )
+    format: ClassVar[EventFormat]
+    schemas_enabled: ClassVar[bool]
 
     def __init__(
         self,
-        properties: Mapping[str, Any] | None = None,
         *,
+        heartbeat_prefix: str = DEFAULT_HEARTBEAT_PREFIX,
         default_variable_scale: int = 10,
-        registry: TypeRegistry | None = None,
     ) -> None:
-        if properties is not None and not isinstance(properties, Mapping):
-            raise TypeError(
-                f"Expected Mapping for properties, got {type(properties).__name__}"
+        if not isinstance(heartbeat_prefix, str) or not heartbeat_prefix.strip():
+            raise ValueError(
+                f"heartbeat_prefix must be a non-empty string, got {heartbeat_prefix!r}"
             )
         if (
             isinstance(default_variable_scale, bool)
+            or not isinstance(default_variable_scale, int)
             or default_variable_scale < 0
             or default_variable_scale > 38
         ):
             raise ValueError(
                 f"default_variable_scale must be between 0 and 38, got {default_variable_scale!r}"
             )
-        if registry is not None and not isinstance(registry, TypeRegistry):
-            raise TypeError(
-                f"Expected TypeRegistry for registry, got {type(registry).__name__}"
-            )
-        self.properties: Mapping[str, Any] = (
-            properties if properties is not None else {}
-        )
-        self.default_variable_scale = default_variable_scale
-        self.registry = (
-            registry
-            if registry is not None
-            else TypeRegistry(default_variable_scale=self.default_variable_scale)
-        )
-
-    @classmethod
-    def from_properties(
-        cls,
-        properties: Mapping[str, Any] | None = None,
-        *,
-        default_variable_scale: int = 10,
-        registry: TypeRegistry | None = None,
-    ) -> EventConverter:
-        """Creates the concrete EventConverter matching the Debezium configuration properties."""
-        if EventFormat.resolve(properties) is EventFormat.CONNECT:
-            return ConnectEventConverter(
-                properties=properties,
-                default_variable_scale=default_variable_scale,
-                registry=registry,
-            )
-        if cls._parse_schemas_enabled(properties if properties is not None else {}):
-            return JsonEventConverter(
-                properties=properties,
-                default_variable_scale=default_variable_scale,
-                registry=registry,
-            )
-        return SchemalessJsonEventConverter(
-            properties=properties,
-            default_variable_scale=default_variable_scale,
-            registry=registry,
-        )
+        self.heartbeat_prefix: str = heartbeat_prefix.strip()
+        self.default_variable_scale: int = default_variable_scale
 
     @cached_property
-    def format(self) -> EventFormat:
-        return EventFormat.resolve(self.properties)
-
-    @cached_property
-    def schemas_enabled(self) -> bool:
-        if self.format is EventFormat.CONNECT:
-            return True
-        return self._parse_schemas_enabled(self.properties)
-
-    @cached_property
-    def heartbeat_prefix(self) -> str:
-        raw_prefix = self.properties.get(
-            "topic.heartbeat.prefix", self.DEFAULT_HEARTBEAT_PREFIX
-        )
-        if not isinstance(raw_prefix, str) or not raw_prefix.strip():
-            raise ValueError(
-                f"topic.heartbeat.prefix must be a non-empty string, got {raw_prefix!r}"
-            )
-        return raw_prefix.strip()
+    def registry(self) -> TypeRegistry:
+        return TypeRegistry(default_variable_scale=self.default_variable_scale)
 
     @abstractmethod
     def convert(self, events: Iterable[ChangeEvent]) -> ChangeBatch:
@@ -226,24 +179,6 @@ class EventConverter(ABC):
         )
 
     @staticmethod
-    def _parse_schemas_enabled(props: Mapping[str, Any]) -> bool:
-        for key in (
-            "value.converter.schemas.enable",
-            "converter.schemas.enable",
-            "schemas.enable",
-        ):
-            if key in props:
-                val = props[key]
-                if isinstance(val, bool):
-                    return val
-                if isinstance(val, str):
-                    norm = val.strip().lower()
-                    if norm in ("true", "false"):
-                        return norm == "true"
-                raise ValueError(f"Invalid boolean value for {key}: {val!r}")
-        return True
-
-    @staticmethod
     def _decode_json_object(raw: Any, context: str) -> dict[str, Any]:
         if isinstance(raw, dict):
             return raw
@@ -281,27 +216,20 @@ class ConnectEventConverter(EventConverter):
     Schemas are always enabled and cached per destination with strong Java references.
     """
 
+    format: ClassVar[EventFormat] = EventFormat.CONNECT
+    schemas_enabled: ClassVar[bool] = True
+
     def __init__(
         self,
-        properties: Mapping[str, Any] | None = None,
         *,
+        heartbeat_prefix: str = EventConverter.DEFAULT_HEARTBEAT_PREFIX,
         default_variable_scale: int = 10,
-        registry: TypeRegistry | None = None,
     ) -> None:
         super().__init__(
-            properties=properties,
+            heartbeat_prefix=heartbeat_prefix,
             default_variable_scale=default_variable_scale,
-            registry=registry,
         )
         self._cache: dict[str, _CachedSchema] = {}
-
-    @cached_property
-    def format(self) -> EventFormat:
-        return EventFormat.CONNECT
-
-    @cached_property
-    def schemas_enabled(self) -> bool:
-        return True
 
     def compile_connect_schema(
         self,
@@ -453,27 +381,20 @@ class JsonEventConverter(EventConverter):
     Strictly requires `{"schema": ..., "payload": ...}` envelopes on records.
     """
 
+    format: ClassVar[EventFormat] = EventFormat.JSON
+    schemas_enabled: ClassVar[bool] = True
+
     def __init__(
         self,
-        properties: Mapping[str, Any] | None = None,
         *,
+        heartbeat_prefix: str = EventConverter.DEFAULT_HEARTBEAT_PREFIX,
         default_variable_scale: int = 10,
-        registry: TypeRegistry | None = None,
     ) -> None:
         super().__init__(
-            properties=properties,
+            heartbeat_prefix=heartbeat_prefix,
             default_variable_scale=default_variable_scale,
-            registry=registry,
         )
         self._cache: dict[str, _CachedSchema] = {}
-
-    @cached_property
-    def format(self) -> EventFormat:
-        return EventFormat.JSON
-
-    @cached_property
-    def schemas_enabled(self) -> bool:
-        return True
 
     def compile_json_schema(
         self,
@@ -688,27 +609,20 @@ class SchemalessJsonEventConverter(EventConverter):
     Infers PyArrow schemas per destination across batches and sanitizes all-null columns.
     """
 
+    format: ClassVar[EventFormat] = EventFormat.JSON
+    schemas_enabled: ClassVar[bool] = False
+
     def __init__(
         self,
-        properties: Mapping[str, Any] | None = None,
         *,
+        heartbeat_prefix: str = EventConverter.DEFAULT_HEARTBEAT_PREFIX,
         default_variable_scale: int = 10,
-        registry: TypeRegistry | None = None,
     ) -> None:
         super().__init__(
-            properties=properties,
+            heartbeat_prefix=heartbeat_prefix,
             default_variable_scale=default_variable_scale,
-            registry=registry,
         )
         self._cache: dict[str, TableSchema] = {}
-
-    @cached_property
-    def format(self) -> EventFormat:
-        return EventFormat.JSON
-
-    @cached_property
-    def schemas_enabled(self) -> bool:
-        return False
 
     def convert(self, events: Iterable[ChangeEvent]) -> ChangeBatch:
         ordered_items: list[
