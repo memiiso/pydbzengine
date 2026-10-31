@@ -33,6 +33,7 @@ classifiers = [
 ]
 dependencies = [
     "jpype1>=1.6.0",
+    "pyarrow",
 ]
 
 [project.optional-dependencies]
@@ -81,6 +82,9 @@ fallback_version = "0.1.0"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
+markers = [
+    "integration: End-to-end integration tests using real PostgreSQL and Debezium containers",
+]
 
 [tool.ruff]
 line-length = 88

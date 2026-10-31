@@ -1,10 +1,61 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
+from enum import Enum
 from typing import Any, Protocol, runtime_checkable
 
 from pydbzengine.logger import LoggingMixin
+
+
+class EventFormat(str, Enum):
+    """Wire serialization format produced by the Debezium engine."""
+
+    JSON = "json"
+    CONNECT = "connect"
+
+    @classmethod
+    def resolve(
+        cls,
+        properties: Mapping[str, Any] | None = None,
+    ) -> EventFormat:
+        if properties is not None and not isinstance(properties, Mapping):
+            raise TypeError(
+                f"Expected Mapping for properties, got {type(properties).__name__}"
+            )
+        props = properties if properties is not None else {}
+        for key in (
+            "format",
+            "engine.format",
+            "converter.format",
+            "value.converter",
+        ):
+            if key in props:
+                candidate = props[key]
+                break
+        else:
+            return cls.JSON
+
+        if isinstance(candidate, cls):
+            return candidate
+        if not isinstance(candidate, str):
+            raise TypeError(
+                f"Expected EventFormat or str for format, got {type(candidate).__name__}: {candidate!r}"
+            )
+        fmt_str = candidate.strip().lower()
+        if fmt_str in (
+            "json",
+            "io.debezium.engine.format.json",
+            "org.apache.kafka.connect.json.jsonconverter",
+        ):
+            return cls.JSON
+        if fmt_str in (
+            "connect",
+            "io.debezium.embedded.connect",
+            "org.apache.kafka.connect.storage.connectconverter",
+        ):
+            return cls.CONNECT
+        raise ValueError(f"Unsupported event format: {candidate!r}")
 
 
 class RecordCommitter(ABC):
@@ -104,10 +155,18 @@ class BasePythonChangeHandler(ABC, LoggingMixin):
         """
         grouped: dict[str, list[ChangeEvent]] = {}
         for record in records:
-            dest = record.destination()
+            raw_dest = record.destination()
+            if raw_dest is None:
+                raise ValueError("Record contains an empty or missing destination.")
+            if not (
+                isinstance(raw_dest, str)
+                or type(raw_dest).__name__ == "java.lang.String"
+            ):
+                raise TypeError(
+                    f"Expected str for record destination, got {type(raw_dest).__name__}: {raw_dest!r}"
+                )
+            dest = str(raw_dest).strip()
             if not dest:
                 raise ValueError("Record contains an empty or missing destination.")
-            if dest not in grouped:
-                grouped[dest] = []
-            grouped[dest].append(record)
+            grouped.setdefault(dest, []).append(record)
         return grouped

@@ -5,6 +5,7 @@ from pydbzengine.engine import (
     ChangeEvent,
     DebeziumEngine,
     DebeziumJsonEngine,
+    EventFormat,
     RecordCommitter,
 )
 from pydbzengine.logger import LoggingMixin
@@ -14,6 +15,7 @@ __all__ = [
     "ChangeEvent",
     "DebeziumEngine",
     "DebeziumJsonEngine",
+    "EventFormat",
     "LoggingMixin",
     "RecordCommitter",
 ]
