@@ -1,99 +1,88 @@
 # Configuration Guide
 
-`pydbzengine` utilizes a standard Python dictionary to configure the embedded Debezium Engine. These properties map directly to Debezium's Java configuration keys.
-
-Below is a reference guide to the essential properties required to set up an embedded Debezium CDC pipeline.
+`pydbzengine` accepts a Python `dict[str, Any]` whose keys map directly to Debezium's Java configuration properties.
 
 ---
 
 ## Core Engine Properties
 
-Every `DebeziumEngine` deployment requires a set of basic parameters to identify the instance and specify offset storage.
+Every `DebeziumEngine` instance requires basic identification and offset storage properties:
 
 | Property | Description | Example |
 | :--- | :--- | :--- |
 | `name` | Unique logical name of the engine instance. | `"engine"` |
-| `connector.class` | The class path of the Debezium connector. | `"io.debezium.connector.postgresql.PostgresConnector"` |
-| `offset.storage` | Storage class to persist database engine offsets. | `"org.apache.kafka.connect.storage.FileOffsetBackingStore"` |
-| `offset.storage.file.filename` | Local filepath to write offsets to disk. | `"/path/to/offsets.dat"` |
-| `offset.flush.interval.ms` | Interval at which engine states are committed. | `"1000"` |
+| `connector.class` | Java class path of the Debezium connector. | `"io.debezium.connector.postgresql.PostgresConnector"` |
+| `offset.storage` | Storage class used to persist source offsets. | `"org.apache.kafka.connect.storage.FileOffsetBackingStore"` |
+| `offset.storage.file.filename` | Local file path where offsets are written. | `"/path/to/offsets.dat"` |
+| `offset.flush.interval.ms` | Interval at which offsets are flushed to storage. | `"1000"` |
 
 ---
 
-## Engine Formats
+## Engine Wire Formats
 
-`DebeziumEngine` supports two record formats:
-- **`"json"`** (*default*): Change events are formatted as JSON strings.
-- **`"connect"`**: Change events are handled as native Kafka Connect `SourceRecord` objects.
+`DebeziumEngine` supports two record wire formats:
+- **`"json"`** (*default*): Events are serialized as JSON strings.
+- **`"connect"`**: Events are passed as in-memory Java Kafka Connect `SourceRecord` objects.
 
 ```python
 from pydbzengine import DebeziumEngine
 
-# Run in JSON mode (default)
+# JSON mode (default)
 engine = DebeziumEngine(properties=dbz_properties, handler=handler)
 
-# Run in Kafka Connect mode
+# Kafka Connect mode
 engine = DebeziumEngine(properties=dbz_properties, handler=handler, format="connect")
 ```
 
 ---
 
 ## Schema History Properties
-Connectors like **MySQL, SQL Server, and Oracle** require database schema histories to track DDL structural changes over time.
+
+Connectors that track DDL history (**MySQL, MariaDB, SQL Server, Oracle, Db2**) require an internal schema history store:
 
 | Property | Description | Example |
 | :--- | :--- | :--- |
-| `schema.history.internal` | Class used to store database schema definitions. | `"io.debezium.storage.file.history.FileSchemaHistory"` |
-| `schema.history.internal.file.filename` | Local file path for storing the database schema history. | `"/path/to/schema_history.dat"` |
+| `schema.history.internal` | Storage class for database schema history. | `"io.debezium.storage.file.history.FileSchemaHistory"` |
+| `schema.history.internal.file.filename` | Local file path for storing schema history. | `"/path/to/schema_history.dat"` |
 
 ---
 
 ## Database Connection Properties
-These settings define connection parameters to replicate from the source database. Note that PostgreSQL requires `plugin.name` to specify the logical decoding plugin (defaults to `pgoutput` on PostgreSQL 10+).
 
 ```python
 dbz_properties = {
-    # Hostname and Credentials
     "database.hostname": "localhost",
     "database.port": "5432",
     "database.user": "postgres",
     "database.password": "postgres",
     "database.dbname": "postgres",
-    # Prefix appended to all published target names/tables
     "topic.prefix": "cdc_prod",
-    # Specific database / table filters
     "table.include.list": "inventory.customers,inventory.orders",
 }
 ```
 
 ---
 
-## Event Unwrapping (ExtractNewRecordState)
+## Event Unwrapping (`ExtractNewRecordState`)
 
-By default, Debezium envelopes change events in a complex structure containing `before`, `after`, `op`, `source`, and timestamp metadata. If you want the event's `value()` to return only the latest flat row state (e.g. for `IcebergChangeHandlerV2` or `DltChangeHandler`), you must enable Debezium's **`ExtractNewRecordState`** transform.
+By default, Debezium wraps change events in an envelope structure containing `before`, `after`, `op`, `source`, and timestamp metadata.
 
-### Example Configuration
-
-Add these lines to your properties dictionary to unwrap database updates:
+- When using [`SchemaAwareChangeHandler`](schema/consumer.md), `schema.row_schema` and `batch.to_arrow(extract_rows=True)` extract the unpacked table row directly from standard Debezium envelopes without requiring an SMT.
+- When using `IcebergChangeHandlerV2` or `DltChangeHandler` with flat payloads, configure Debezium's `ExtractNewRecordState` transform:
 
 ```python
 dbz_properties.update(
     {
-        # Register the unwrap transform
         "transforms": "unwrap",
-        # Specify the unwrap class
         "transforms.unwrap.type": "io.debezium.transforms.ExtractNewRecordState",
-        # Optionally append metadata to the unwrapped event
         "transforms.unwrap.add.fields": "op,table,source.ts_ms,sourcedb,ts_ms",
-        # How to handle deleted rows (tombstones)
         "transforms.unwrap.delete.tombstone.handling.mode": "rewrite",
     }
 )
 ```
 
-*   **`delete.tombstone.handling.mode`**: Set to `"rewrite"` to ensure delete events are cleanly represented in your Python handlers instead of triggering empty tombstone exceptions.
-
 ---
 
-## Official Documentation Reference
-For the complete list of connector-specific and advanced options, please refer to the [Official Debezium Connector Configuration Guide](https://debezium.io/documentation/reference/stable/connectors/index.html).
+## External Reference
+
+For connector-specific properties, see the [Debezium Connector Configuration Reference](https://debezium.io/documentation/reference/stable/connectors/index.html).
