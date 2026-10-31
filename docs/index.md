@@ -1,42 +1,47 @@
 # pydbzengine
 
-A Pythonic interface for the [Debezium Engine](https://debezium.io/documentation/reference/stable/development/engine.html), allowing you to consume database Change Data Capture (CDC) events directly in your Python applications.
+A Python interface for the [Debezium Embedded Engine](https://debezium.io/documentation/reference/stable/development/engine.html) to consume database Change Data Capture (CDC) events in Python.
 
 ## Features
 
-*   **Pure Python Interface**: Interact with the powerful Debezium Engine using simple Python classes and methods.
-*   **Multi-Format Support**: Unified engine supporting both JSON and Kafka Connect record formats (`json` and `connect`).
-*   **Pluggable Event Handlers**: Easily create custom handlers to process CDC events according to your specific needs.
-*   **Built-in Iceberg Handler**: Stream change events directly into Apache Iceberg tables with zero boilerplate.
-*   **Seamless Integration**: Designed to work with popular Python data tools like [dlt (data load tool)](https://dlthub.com/).
-*   **Apache Airflow Operator**: Run Debezium engines directly within Airflow DAGs using the built-in `DebeziumEngineOperator` (see [Airflow docs](airflow.md)).
-*   **Asynchronous & Snapshot Helpers**: Run engines with time limits or terminate them automatically once initial snapshots complete using `Utils` (see [Helper docs](helpers.md)).
-*   **All Debezium Connectors**: Supports all standard Debezium connectors (PostgreSQL, MySQL, SQL Server, Oracle, etc.).
+*   **Python Interface**: Configure and run the embedded Debezium Engine using Python dicts and handler classes.
+*   **Multi-Format Support**: Consume events in either `"json"` or Kafka `"connect"` (`SourceRecord`) wire formats.
+*   **Schema-Aware Consumer (`pydbzengine.schema`)**: Compile Debezium schemas into Apache Arrow (`pyarrow.Schema` and `pyarrow.Table`) with automatic schema tracking and `SchemaDiff` calculation (see [Schema Subsystem](schema/index.md)).
+*   **Apache Iceberg Handler**: Stream CDC events into Apache Iceberg tables (see [Iceberg Handler](handlers/iceberg.md)).
+*   **dlt Integration**: Load CDC events into DuckDB, BigQuery, Snowflake, and other [dlt](https://dlthub.com/) destinations (see [dlt Handler](handlers/dlt.md)).
+*   **Apache Airflow Operator**: Run Debezium engines inside Airflow DAGs via `DebeziumEngineOperator` (see [Airflow Operator](airflow.md)).
+*   **Execution Helpers**: Run engines with timeouts or stop automatically after initial snapshots complete via `Utils` (see [Helper Utilities](helpers.md)).
+*   **Debezium Connectors**: Bundled with standard Debezium connectors (PostgreSQL, MySQL, MariaDB, SQL Server, Oracle, MongoDB, Db2).
 
 ## How it Works
 
-This library acts as a bridge between the Python world and the Java-based Debezium Engine. It uses [JPype](https://jpype.readthedocs.io/en/stable/) to manage the JVM and interact with Debezium's Java classes, exposing a clean, Pythonic API so you can focus on your data logic without writing Java code.
+`pydbzengine` uses [JPype](https://jpype.readthedocs.io/en/stable/) to start an embedded JVM and bridge Debezium's Java `DebeziumEngine` callbacks into Python batch handlers.
 
 ## Quick Start
 
 ```python
-from typing import List
-from pydbzengine import ChangeEvent, BasePythonChangeHandler, DebeziumEngine
+from pydbzengine import BasePythonChangeHandler, ChangeEvent, DebeziumEngine
 
 
-class PrintChangeHandler(BasePythonChangeHandler):
-    def handleJsonBatch(self, records: List[ChangeEvent]):
+class LogChangeHandler(BasePythonChangeHandler):
+    def handle_batch(self, records: list[ChangeEvent]) -> int:
         for record in records:
-            print(f"Record: {record.value()}")
+            self.log.info(
+                "Event on %s: key=%s, value=%s",
+                record.destination(),
+                record.key(),
+                record.value(),
+            )
+        return len(records)
 
 
 if __name__ == "__main__":
     props = {
         "name": "engine",
-        # ... set your connector properties ...
+        # ... connector properties ...
     }
 
-    # By default, runs in JSON format. Specify format="connect" for Connect format.
-    engine = DebeziumEngine(properties=props, handler=PrintChangeHandler())
+    # Runs in JSON format by default; pass format="connect" for Connect SourceRecords.
+    engine = DebeziumEngine(properties=props, handler=LogChangeHandler())
     engine.run()
 ```

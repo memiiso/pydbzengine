@@ -2,43 +2,35 @@
 
 ## Prerequisites
 
-You must have a **Java Development Kit (JDK) version 17 or newer** installed and available in your system's `PATH`.
+A **Java Development Kit (JDK) version 17 or newer** must be installed and available in your system `PATH` (or configured via `JAVA_HOME`).
 
-## Recommended Installation: From GitHub
+## Installing from GitHub
 
-> [!WARNING]
-> Due to the package size (including `.jar` artifacts), new versions are no longer published to PyPI. The version on PyPI is outdated. It is **strongly recommended to install the package directly from GitHub** to get the latest features and fixes.
+!!! warning "PyPI Version Notice"
+    Due to bundled `.jar` artifact size limits, new releases are not published to PyPI. Install directly from GitHub to obtain current features and fixes.
 
-You can install either the latest development version from the `main` branch or a specific, stable version from a release tag.
-
-### Latest Development Version
+### Latest Main Branch
 
 ```shell
-# For core functionality
+# Core package (includes pyarrow and jpype1)
 pip install "git+https://github.com/memiiso/pydbzengine.git"
 
-# With extras (e.g., iceberg, dlt)
+# With optional integrations
 pip install "pydbzengine[iceberg] @ git+https://github.com/memiiso/pydbzengine.git"
 pip install "pydbzengine[dlt] @ git+https://github.com/memiiso/pydbzengine.git"
+pip install "pydbzengine[airflow] @ git+https://github.com/memiiso/pydbzengine.git"
 ```
 
-### Specific Version
-
-To install a specific version from a release tag (e.g., `3.4.1.0`):
+### Specific Release Tag
 
 ```shell
 pip install "pydbzengine @ git+https://github.com/memiiso/pydbzengine.git@3.4.1.0"
 ```
 
-## Alternative: From PyPI (Outdated Version)
-
-An older version is available on PyPI. You can install it, but be aware that it lacks recent features and updates.
+## Installing Legacy Version from PyPI
 
 ```shell
-# For core functionality
 pip install pydbzengine
-
-# With extras
 pip install "pydbzengine[iceberg]"
 pip install "pydbzengine[dlt]"
 ```
