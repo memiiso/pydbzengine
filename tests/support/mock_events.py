@@ -1,3 +1,7 @@
+from __future__ import annotations
+
+from typing import Any
+
 from pydbzengine import ChangeEvent
 
 
@@ -6,7 +10,13 @@ class MockChangeEvent(ChangeEvent):
     A concrete implementation of ChangeEvent for testing.
     """
 
-    def __init__(self, key: str, value: str, destination: str, partition: int = 1):
+    def __init__(
+        self,
+        key: Any = None,
+        value: Any = None,
+        destination: str = "",
+        partition: int = 1,
+    ):
         self._key = key
         self._value = value
         self._destination = destination
