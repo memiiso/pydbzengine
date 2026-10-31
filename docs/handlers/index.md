@@ -1,27 +1,30 @@
 # Handlers Overview
 
-`pydbzengine` comes with several built-in handlers to stream CDC events directly into common data destinations. You can also easily create your own by extending the `BasePythonChangeHandler`.
+`pydbzengine` provides built-in handlers for common destinations and base classes for custom consumers.
 
 ## Available Handlers
 
-- **[Apache Iceberg](iceberg.md)**: Stream change events directly into Apache Iceberg tables. Supports automatic schema inference and partitioning (via `IcebergChangeHandlerV2`).
-- **[dlt (data load tool)](dlt.md)**: Integrate with `dlt` to load data into DuckDB, BigQuery, Snowflake, and more.
-- **[Custom Handlers](custom.md)**: Implement your own logic for any destination or processing requirement.
+- **[Schema-Aware Consumer (`SchemaAwareChangeHandler`)](../schema/consumer.md)**: Base class for typed CDC consumers. Compiles Debezium schemas into PyArrow `TableSchema` descriptors, computes `SchemaDiff` on schema evolution, and slices events into homogeneous `TableBatch` runs.
+- **[Apache Iceberg](iceberg.md)**: Appends CDC events into Apache Iceberg tables (`IcebergChangeHandlerV2` and `IcebergChangeHandler`).
+- **[dlt (data load tool)](dlt.md)**: Loads CDC events into DuckDB, BigQuery, Snowflake, and other `dlt` destinations via `DltChangeHandler`.
+- **[Custom Handlers (`BasePythonChangeHandler`)](custom.md)**: Low-level handler interface for processing raw `ChangeEvent` batches directly.
 
-## Using a Handler
+## Running a Handler
 
-To use a handler, simply pass an instance of it to the `DebeziumEngine`:
+Pass the configured handler instance to `DebeziumEngine`:
 
 ```python
 from pydbzengine import DebeziumEngine
 from pydbzengine.handlers.iceberg import IcebergChangeHandlerV2
 
-# ... setup catalog and props ...
 props = {
     "name": "engine",
-    # ...
+    # ... connector properties ...
 }
-handler = IcebergChangeHandlerV2(catalog=catalog, ...)
+handler = IcebergChangeHandlerV2(
+    catalog=catalog,
+    destination_namespace=("iceberg", "debezium_cdc_data"),
+)
 engine = DebeziumEngine(properties=props, handler=handler)
 engine.run()
 ```

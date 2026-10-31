@@ -1,30 +1,29 @@
 # dlt (data load tool) Handler
 
-The `DltChangeHandler` integrates seamlessly with the [dlt](https://dlthub.com/) library, allowing you to load CDC events into any destination `dlt` supports.
+`DltChangeHandler` loads Debezium JSON change events into any destination supported by [dlt](https://dlthub.com/) (DuckDB, BigQuery, Snowflake, Redshift, Postgres, and others).
 
-## Features
+## Behavior
 
-- **Schema Evolution**: leverages `dlt`'s powerful schema inference and evolution capabilities.
-- **Multi-Destination**: Supports DuckDB, BigQuery, Snowflake, Redshift, and more.
-- **Normalization**: Automatically normalizes nested data according to your `dlt` configuration.
+- Groups non-null JSON records by `record.destination()` (replacing `.` with `_` for table naming).
+- Parses each JSON payload and yields a `dlt.resource` per destination table into `dlt_pipeline.run(...)`.
 
 ## Example Usage
 
 ```python
 import dlt
+
 from pydbzengine import DebeziumEngine
 from pydbzengine.handlers.dlt import DltChangeHandler
 
-# Create a dlt pipeline
 dlt_pipeline = dlt.pipeline(
-    pipeline_name="dbz_cdc_events", destination="duckdb", dataset_name="dbz_data"
+    pipeline_name="dbz_cdc_events",
+    destination="duckdb",
+    dataset_name="dbz_data",
 )
 
 handler = DltChangeHandler(dlt_pipeline=dlt_pipeline)
-
-# Run with DebeziumEngine
 engine = DebeziumEngine(properties=dbz_properties, handler=handler)
 engine.run()
 ```
 
-For a full working example, see [dlt_consuming.py](https://github.com/memiiso/pydbzengine/blob/main/pydbzengine/examples/dlt_consuming.py).
+See [dlt_consuming.py](https://github.com/memiiso/pydbzengine/blob/main/pydbzengine/examples/dlt_consuming.py) for a runnable script.

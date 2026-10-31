@@ -1,20 +1,20 @@
 # Apache Iceberg Handler
 
-The primary Iceberg handler is `IcebergChangeHandlerV2`. It is designed to stream CDC events directly into Apache Iceberg tables, automatically inferring schemas and managing table structures.
+`pydbzengine.handlers.iceberg` provides two handlers for writing CDC events to Apache Iceberg tables.
 
-## IcebergChangeHandlerV2 (Recommended)
+## `IcebergChangeHandlerV2`
 
-This is the most advanced handler, which automatically infers the schema from the Debezium events and creates well-structured Iceberg tables.
+Infers a PyArrow schema from incoming JSON records, creates partitioned Iceberg tables if they do not exist, and appends batches:
 
-- **Automatic Schema Inference**: Inspects the first batch of records and infers the schema using PyArrow, preserving native data types (e.g., `LongType`, `TimestampType`).
-- **Use Case**: Ideal for scenarios where you want the pipeline to automatically create tables with native data types that mirror the source.
-- **Robustness**: If a field's type cannot be inferred (e.g., all `null`), it safely falls back to `StringType`.
-- **Metadata**: Adds `_consumed_at`, `_dbz_event_key`, and `_dbz_event_key_hash` columns for traceability.
+- **Schema Inference**: Reads the JSON batch via `pyarrow.json`, replacing all-null columns with `pa.string()`.
+- **Schema Evolution**: Unions newly observed fields into the existing Iceberg table schema via `table.update_schema().union_by_name(...)`.
+- **Metadata & Partitioning**: Appends `_consumed_at`, `_dbz_event_key`, and `_dbz_event_key_hash` columns and partitions the table by `DayTransform()` on `_consumed_at`.
 
-## Example Usage
+### Example Usage
 
 ```python
 from pyiceberg.catalog import load_catalog
+
 from pydbzengine import DebeziumEngine
 from pydbzengine.handlers.iceberg import IcebergChangeHandlerV2
 
@@ -27,17 +27,17 @@ conf = {
 }
 catalog = load_catalog(name="rest", **conf)
 handler = IcebergChangeHandlerV2(
-    catalog=catalog, destination_namespace=("iceberg", "debezium_cdc_data")
+    catalog=catalog,
+    destination_namespace=("iceberg", "debezium_cdc_data"),
 )
 
-# Run with DebeziumEngine
 engine = DebeziumEngine(properties=dbz_properties, handler=handler)
 engine.run()
 ```
 
-## IcebergChangeHandler (V1)
+## `IcebergChangeHandler` (V1)
 
-A simpler handler that appends change data to a source-equivalent Iceberg table using a fixed schema.
+Appends raw Debezium JSON envelopes to an Iceberg table with a fixed schema:
 
-- **Structure**: The `before` and `after` payloads are stored as complete JSON strings.
-- **Use Case**: Best for creating a "bronze" layer where you want to capture the raw Debezium event exactly as it comes, absorbing all source system schema changes automatically.
+- **Fixed Schema**: Stores `op`, `ts_ms`, `ts_us`, `ts_ns`, serialized JSON strings for `source`, `before`, and `after`, plus `_dbz_event_key`, `_dbz_event_key_hash`, and `_consumed_at`.
+- **Use Case**: Raw bronze-layer ingestion where `before` and `after` states are kept as unparsed JSON strings.

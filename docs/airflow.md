@@ -1,49 +1,47 @@
 # Apache Airflow Operator
 
-`pydbzengine` provides built-in integration with Apache Airflow via the `DebeziumEngineOperator` located in `pydbzengine.airflow`.
+`pydbzengine.airflow` provides `DebeziumEngineOperator` to execute a `DebeziumEngine` instance inside an Apache Airflow DAG task.
 
-This operator wraps `DebeziumEngine` to run it as a task in Airflow, handling task execution and proper interruption/shutdown when a task is killed.
+## Installation
 
-## Prerequisites
-
-To use the Airflow operator, you must install the `dev` extra dependencies or have `apache-airflow` installed:
+Install the `airflow` extra:
 
 ```shell
-pip install "pydbzengine[dev] @ git+https://github.com/memiiso/pydbzengine.git"
+pip install "pydbzengine[airflow] @ git+https://github.com/memiiso/pydbzengine.git"
 ```
 
 ## Operator Reference
 
-### `DebeziumEngineOperator`
-
-The operator constructor takes a pre-configured `DebeziumEngine` instance (or `DebeziumJsonEngine`) and standard Airflow `BaseOperator` arguments.
-
 ```python
 class DebeziumEngineOperator(BaseOperator):
-    def __init__(self, engine: DebeziumEngine, **kwargs) -> None
+    def __init__(self, engine: DebeziumEngine, **kwargs: Any) -> None
 ```
 
-*   **`engine`**: A configured instance of `DebeziumEngine`.
-*   **`**kwargs`**: Pass-through arguments for `BaseOperator` (e.g. `task_id`, `dag`, `retries`).
+*   **`engine`**: Configured `DebeziumEngine` instance.
+*   **`**kwargs`**: Standard `BaseOperator` arguments (`task_id`, `dag`, `retries`, etc.).
 
-When Airflow halts the task, the operator automatically calls `engine.interrupt()` (via `on_kill`) to gracefully shut down the Debezium engine and the JVM.
+When Airflow terminates or times out the task, `on_kill()` calls `engine.interrupt()` to close the underlying Debezium engine.
 
 ## Example DAG
 
-Here is an example demonstrating how to run Debezium within a DAG using a custom handler that prints change records:
-
 ```python
 from datetime import datetime, timedelta
-from typing import List
+
 from airflow import DAG
-from pydbzengine import ChangeEvent, BasePythonChangeHandler, DebeziumEngine
+
+from pydbzengine import BasePythonChangeHandler, ChangeEvent, DebeziumEngine
 from pydbzengine.airflow import DebeziumEngineOperator
 
 
-class MyPrintHandler(BasePythonChangeHandler):
-    def handleJsonBatch(self, records: List[ChangeEvent]):
+class LogChangeHandler(BasePythonChangeHandler):
+    def handle_batch(self, records: list[ChangeEvent]) -> int:
         for record in records:
-            print(f"Captured event on table {record.destination()}: {record.value()}")
+            self.log.info(
+                "Captured event on %s: %s",
+                record.destination(),
+                record.value(),
+            )
+        return len(records)
 
 
 default_args = {
@@ -59,7 +57,6 @@ with DAG(
     schedule_interval="@daily",
     catchup=False,
 ) as dag:
-    # Define Debezium configurations
     dbz_properties = {
         "name": "airflow-cdc-engine",
         "connector.class": "io.debezium.connector.postgresql.PostgresConnector",
@@ -76,10 +73,8 @@ with DAG(
         "schema.history.internal.file.filename": "/tmp/schema_history.dat",
     }
 
-    # Instantiate engine and handler
-    engine = DebeziumEngine(properties=dbz_properties, handler=MyPrintHandler())
+    engine = DebeziumEngine(properties=dbz_properties, handler=LogChangeHandler())
 
-    # Create the task
     run_debezium_task = DebeziumEngineOperator(
         task_id="run_debezium_cdc",
         engine=engine,
