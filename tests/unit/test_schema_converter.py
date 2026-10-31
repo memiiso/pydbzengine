@@ -205,7 +205,7 @@ class TestEventConverterAndTypeHandlers(unittest.TestCase):
         batch = self.converter.convert([rec])
         self.assertEqual(len(batch.records), 1)
         record = batch.records[0]
-        table_schema, row = record.schema, record.row
+        table_schema, row = record.schema, record.value
         assert table_schema is not None
         assert row is not None
         self.assertEqual(table_schema.destination, "inventory.customers")

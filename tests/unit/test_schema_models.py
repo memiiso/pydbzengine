@@ -202,7 +202,7 @@ class TestSchemaModels(unittest.TestCase):
         ts_with_schema = ChangeRecord(schema=schema, value=None, key={"id": 42})
         self.assertEqual(ts_with_schema.kind, EventKind.TOMBSTONE)
         self.assertIsNone(ts_with_schema.value)
-        self.assertIsNone(ts_with_schema.row)
+        self.assertIsNone(ts_with_schema.value)
         self.assertIsNone(ts_with_schema.data)
         self.assertIsNone(ts_with_schema.op)
         self.assertIsNone(ts_with_schema.before)

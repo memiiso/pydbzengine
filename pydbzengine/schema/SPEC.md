@@ -93,7 +93,7 @@ Each data type family is modeled as a distinct, self-contained handler class wit
 
 ### Requirement 2: Global Apache Arrow Schema Compilation & Destination Caching
 - **Goal**: Compile JSON and Connect schemas into reusable Apache Arrow **Table Schema** entities cached per destination.
-- **Status**: Implemented (requires removing reverse Arrow-to-handler synthesis when handlers are omitted).
+- **Status**: Implemented
 - **Specification Details**:
   1. JSON schema blocks and Java Connect schemas must normalize into an immutable field specification tree capturing field name, base type, nullability, documentation, logical type name, parameters, and child specifications.
   2. Normalized specifications must compile into Apache Arrow fields (storing documentation and logical type names in Arrow field metadata) paired with their compiled data type handlers.
@@ -102,14 +102,14 @@ Each data type family is modeled as a distinct, self-contained handler class wit
 
 ### Requirement 3: Dedicated Scalar Primitive & Logical Scalar Handlers
 - **Goal**: Model integer, float, boolean, string, and temporal duration/interval primitives as separate, strict handler classes without post-init function-pointer mutation.
-- **Status**: Partially Implemented (currently lumped into a single primitive handler using dynamic function-pointer binding).
+- **Status**: Implemented
 - **Specification Details**:
   1. Separate handler classes must be defined for **Integer** (8/16/32/64-bit), **Float** (32/64-bit), **Boolean**, **String** (including UUID, JSON, XML, Enum, EnumSet, Ltree, ObjectId, Tsvector, and ISO Interval), and **Temporal Duration/Interval** (32-bit Year and Year-to-Month; 64-bit MicroDuration, NanoDuration, and Day-to-Second).
   2. Each handler class must implement strict JSON conversion (accepting only JSON primitive types) and strict Connect conversion (accepting only Java Connect primitive/wrapper types), rejecting booleans for numeric fields and floats for integer fields.
 
 ### Requirement 4: Dedicated Temporal Date, Time, and Timestamp Handlers
 - **Goal**: Convert date, time, and timestamp fields with strict isolation between JSON wire representations and Java Connect temporal objects.
-- **Status**: Implemented (requires removing non-JSON Python object fallbacks from JSON conversion methods).
+- **Status**: Implemented
 - **Specification Details**:
   1. **Date Handler**: Maps to 32-bit Arrow dates. JSON conversion must accept integer epoch days or ISO-8601 strings; Connect conversion must accept integer epoch days, Java date/temporal objects, or ISO strings.
   2. **Time Handler**: Maps to 32-bit millisecond or 64-bit microsecond/nanosecond Arrow times. JSON conversion must accept integer offsets or ISO-8601 time strings (preserving nanoseconds when target unit is nanoseconds); Connect conversion must accept integer offsets, Java time objects, or ISO strings.
@@ -117,7 +117,7 @@ Each data type family is modeled as a distinct, self-contained handler class wit
 
 ### Requirement 5: Dedicated Fixed-Scale and Variable-Scale Decimal Handlers
 - **Goal**: Convert fixed-scale and variable-scale decimals into 128-bit Apache Arrow decimals with separate, deterministic JSON and Connect decoding paths.
-- **Status**: Implemented (requires separating JSON and Connect decoding paths instead of sharing a multi-type fallback chain).
+- **Status**: Implemented
 - **Specification Details**:
   1. Precision must be validated between 1 and 38 (defaulting to 38) and scale between 0 and precision.
   2. In JSON mode, fixed-scale decimals must decode Base64 two's-complement strings, numeric strings, integers, or finite floats; variable-scale decimals must extract the integer scale and unscaled value from the JSON mapping.
@@ -126,7 +126,7 @@ Each data type family is modeled as a distinct, self-contained handler class wit
 
 ### Requirement 6: Dedicated Binary and Bit-Set Handler
 - **Goal**: Convert binary columns and bit-sets into Apache Arrow binary values without cross-mode fallback calls.
-- **Status**: Implemented (requires removing Connect-to-JSON fallback calls).
+- **Status**: Implemented
 - **Specification Details**:
   1. Maps raw bytes and Debezium bit-sets to Arrow variable-length binary types.
   2. JSON conversion must decode Base64-encoded strings or zero-x prefixed hexadecimal strings.
@@ -134,7 +134,7 @@ Each data type family is modeled as a distinct, self-contained handler class wit
 
 ### Requirement 7: Dedicated Geospatial, Vector, Struct, Array, and Map Handlers
 - **Goal**: Model geospatial types, dense/sparse vectors, nested structs, arrays, and maps in dedicated handler classes with deterministic logical-type precedence.
-- **Status**: Partially Implemented (requires dedicated geospatial/vector handler classes and matching logical types before generic struct/array compilation).
+- **Status**: Implemented
 - **Specification Details**:
   1. The type registry must check logical type names for **Geometry**, **Geography**, **Point**, **SparseDoubleVector**, **FloatVector**, and **DoubleVector** *before* generic struct or array compilation so their dedicated handlers are always selected even when wire schemas include sub-field definitions.
   2. **Struct Handler** must recursively convert JSON dicts in JSON mode and Java Connect structs in Connect mode in a single pass.
@@ -143,7 +143,7 @@ Each data type family is modeled as a distinct, self-contained handler class wit
 
 ### Requirement 8: Schemaless JSON Inference Encapsulated in Schemaless Converter
 - **Goal**: Infer valid Apache Arrow schemas from schemaless JSON batches while keeping all schemaless inference and null-sanitization logic encapsulated inside the **Schemaless JSON Event Converter**.
-- **Status**: Partially Implemented (currently lives on **Table Schema** instead of **Schemaless JSON Event Converter**).
+- **Status**: Implemented
 - **Specification Details**:
   1. **Schemaless JSON Event Converter** must infer an Apache Arrow schema per destination from each batch of raw JSON payloads.
   2. For Debezium envelope payloads (containing operation code, before state, and after state), if either before or after is all-null across the batch, it must mirror the struct schema from the populated side; if both are structs with differing field types, it must unify them permissively.
@@ -151,14 +151,14 @@ Each data type family is modeled as a distinct, self-contained handler class wit
 
 ### Requirement 9: Key Conversion and Scalar Primary Key Resolution
 - **Goal**: Convert event keys using compiled key handlers and validate scalar primary key column names against the table schema.
-- **Status**: Implemented (requires removing the dead schemaless-Connect-key unwrapper).
+- **Status**: Implemented
 - **Specification Details**:
   1. In Connect and Schema-Enabled JSON modes, event keys must be converted using the compiled key handler (supporting struct keys, map keys, and single-field scalar keys). In Schemaless JSON mode, keys are parsed directly as JSON dictionaries.
   2. Primary key column names must be matched against the table's row fields (inside before/after structs for envelopes, or top-level fields for flattened records) and validated to reject nested struct, list, or map types.
 
 ### Requirement 10: Single Enum Properties for Event Kind & Operation Type, and Standard Tombstone Processing
 - **Goal**: Keep **Change Record** simple and free of boolean wrapper bloat by exposing single enum properties for event category and operation type, and processing tombstones through the standard pipeline.
-- **Status**: Pending Refactoring
+- **Status**: Implemented
 - **Specification Details**:
   1. **Single Event Kind Enum Property**: **Change Record** must expose a single `kind` property returning an **Event Kind** enum with four values: **Data**, **Heartbeat**, **Schema Change**, and **Tombstone**. Redundant boolean wrapper properties (`is_data`, `is_heartbeat`, `is_schema_change`, `is_tombstone`) must not be defined.
   2. **Single Change Operation Enum Property**: **Change Record** must expose a single `op` property returning a **Change Operation** enum (**Insert** for `'c'`, **Update** for `'u'`, **Delete** for `'d'`, **Read** for `'r'`, **Truncate** for `'t'`, **Message** for `'m'`, or null when absent/tombstone). Redundant boolean wrapper properties (`is_insert`, `is_update`, `is_delete`, `is_read`) must not be defined.
@@ -167,7 +167,7 @@ Each data type family is modeled as a distinct, self-contained handler class wit
 
 ### Requirement 11: Table Batch as the Primary Arrow + Rows Carrier & Schema Diff Utilities
 - **Goal**: Group converted records into homogeneous per-destination **Table Batch** objects that own Apache Arrow Table materialization, paired with **Schema Diff** utilities.
-- **Status**: Partially Implemented (requires removing `ChangeBatch.to_arrow`, `ChangeRecord.to_arrow`, and silent post-init record splitting).
+- **Status**: Implemented
 - **Specification Details**:
   1. **Table Batch (Arrow Schema + Rows)**: Groups consecutive converted records sharing the same destination and **Table Schema**. Exposes full envelope `rows`, unpacked table `data_rows`, and `to_arrow(target_schema, extract_rows)` to materialize an Apache Arrow Table directly.
   2. **Change Batch**: Holds the tuple of converted **Change Record** items in arrival order without silent post-init mutation, provides filtering by **Event Kind**, and slices records by destination into homogeneous **Table Batch** runs whenever a destination's schema evolves. Does not expose a fragile batch-wide `to_arrow` method.
@@ -175,7 +175,7 @@ Each data type family is modeled as a distinct, self-contained handler class wit
 
 ### Requirement 12: Schema-Aware Change Handler Inside the Schema Subsystem
 - **Goal**: Provide a base consumer handler inside the schema package that automates conversion, per-destination schema tracking, and lifecycle dispatch.
-- **Status**: Partially Implemented (currently located in the engine package with a separate tombstone hook).
+- **Status**: Implemented
 - **Specification Details**:
   1. **Package Locality**: **Schema-Aware Change Handler** must reside in the schema subsystem (subclassing the engine's base change handler contract) so the core engine package has zero imports or dependencies on the schema subsystem.
   2. **Lifecycle Dispatch**: On each batch of raw engine events, the handler must convert the batch via its converter, iterate through the homogeneous **Table Batch** runs, track the active **Table Schema** per destination, and invoke:

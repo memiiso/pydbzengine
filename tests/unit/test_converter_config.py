@@ -289,7 +289,6 @@ class TestEventConverterConfig(unittest.TestCase):
                 {
                     "format": "json",
                     "value.converter": "org.apache.kafka.connect.storage.ConnectConverter",
-                    "key.converter": "org.apache.kafka.connect.storage.ConnectConverter",
                 }
             )
         with self.assertRaisesRegex(

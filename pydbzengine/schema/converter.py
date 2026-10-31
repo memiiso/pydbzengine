@@ -507,8 +507,8 @@ class JsonEventConverter(EventConverter):
         if "schema" not in envelope or "payload" not in envelope:
             raise ValueError(
                 f"Event for destination '{destination}' is missing required 'schema' and 'payload' blocks. "
-                "If your connector is configured with 'schemas.enable=false' or 'value.converter.schemas.enable=false', "
-                "initialize EventConverter with schemas_enabled=False."
+                "If your connector is configured with 'schemas.enable=false', "
+                "use SchemalessJsonEventConverter or configure DebeziumConfig with schemas.enable=false."
             )
 
         schema_block = envelope["schema"]

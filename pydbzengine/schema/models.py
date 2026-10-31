@@ -10,11 +10,9 @@ import pyarrow as pa
 
 from pydbzengine.schema.types import (
     DataTypeHandler,
-    FieldSpec,
     MapTypeHandler,
     SchemaField,
     StructTypeHandler,
-    TypeRegistry,
 )
 
 __all__ = [
@@ -357,19 +355,8 @@ class TableSchema:
                 else "key"
             )
             return {key_name: key_handler.convert_connect(key_val)}
-        if hasattr(key_val, "schema"):
-            ks = key_val.schema()
-            if ks is None:
-                raise ValueError(
-                    f"Connect key Struct has None schema() for destination '{destination}'"
-                )
-            return (
-                TypeRegistry()
-                .compile_struct(FieldSpec.from_connect(ks, field_name="key"))
-                .convert_connect(key_val)
-            )
         raise TypeError(
-            f"Unsupported Connect key type {type(key_val).__name__} without key schema "
+            f"Unsupported Connect key type {type(key_val).__name__} without compiled key_handler "
             f"for destination '{destination}'"
         )
 
@@ -438,10 +425,6 @@ class ChangeRecord:
                     "Tombstone ChangeRecord without TableSchema requires a non-empty destination."
                 )
             object.__setattr__(self, "destination", resolved_dest)
-
-    @property
-    def row(self) -> dict[str, Any] | None:
-        return self.value
 
     @property
     def kind(self) -> EventKind:

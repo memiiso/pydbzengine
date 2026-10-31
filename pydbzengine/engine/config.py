@@ -81,30 +81,29 @@ class DebeziumConfig:
                 key_format = EventFormat.resolve_from(properties[key])
                 break
 
-        effective_value = value_format if value_format is not None else general_format
-        effective_key = key_format if key_format is not None else general_format
-
         if (
-            effective_value is not None
-            and effective_key is not None
-            and effective_value is not effective_key
+            value_format is not None
+            and key_format is not None
+            and value_format is not key_format
         ):
             raise ValueError(
-                f"Having two different formats for event ({effective_value.value!r}) "
-                f"and key ({effective_key.value!r}) is not supported."
+                f"Having two different formats for event ({value_format.value!r}) "
+                f"and key ({key_format.value!r}) is not supported."
             )
+
+        converter_format = value_format if value_format is not None else key_format
         if (
             general_format is not None
-            and effective_value is not None
-            and general_format is not effective_value
+            and converter_format is not None
+            and general_format is not converter_format
         ):
             raise ValueError(
                 f"Conflicting format configuration in properties: engine format "
-                f"{general_format.value!r} does not match converter format {effective_value.value!r}."
+                f"{general_format.value!r} does not match converter format {converter_format.value!r}."
             )
 
         property_format = (
-            effective_value if effective_value is not None else effective_key
+            converter_format if converter_format is not None else general_format
         )
         if format is not None:
             resolved_explicit = EventFormat.resolve_from(format)

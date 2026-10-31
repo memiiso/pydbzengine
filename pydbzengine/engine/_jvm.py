@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import logging
 from typing import TYPE_CHECKING
 
@@ -42,16 +44,16 @@ class PythonChangeConsumer:
     This class acts as a bridge between Java Debezium Engine and the Python handler.
     """
 
-    def __init__(self):
-        self.handler: BasePythonChangeHandler | None = (
-            None  # The Python handler instance.
-        )
-        self._exception = (
-            None  # Store any Python exception raised during callback execution.
-        )
+    def __init__(self) -> None:
+        self.handler: BasePythonChangeHandler | None = None
+        self._exception: Exception | None = None
 
     @jpype.JOverride
-    def handleBatch(self, records: list["ChangeEvent"], committer: "RecordCommitter"):
+    def handleBatch(
+        self,
+        records: list[ChangeEvent],
+        committer: RecordCommitter,
+    ) -> None:
         """
         Handles a batch of change events received from the Debezium engine.
 
@@ -77,7 +79,7 @@ class PythonChangeConsumer:
             JThread.currentThread().interrupt()  # Interrupt the Debezium engine on error.
 
     @jpype.JOverride
-    def supportsTombstoneEvents(self):
+    def supportsTombstoneEvents(self) -> bool:
         """
         Indicates whether the consumer supports tombstone events.
         """
@@ -97,7 +99,7 @@ class PythonChangeConsumer:
         if self._exception is not None:
             raise self._exception
 
-    def set_change_handler(self, handler: "BasePythonChangeHandler"):
+    def set_change_handler(self, handler: BasePythonChangeHandler) -> None:
         """
         Sets the Python change event handler.
 
@@ -106,16 +108,9 @@ class PythonChangeConsumer:
         """
         self.handler = handler
 
-    def interrupt(self):
+    def interrupt(self) -> None:
         """
         Interrupts the Debezium engine.
         """
         logger.info("Interrupt called in python consumer")
-        JThread.currentThread().interrupt()  # Interrupt the current thread (Debezium engine thread).
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, exc_type, exc_value, traceback):
-        logger.info("Python Exit method called! calling interrupt to stop the engine")
-        self.interrupt()
+        JThread.currentThread().interrupt()
