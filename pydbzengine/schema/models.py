@@ -17,7 +17,6 @@ from pydbzengine.schema.types import (
 __all__ = [
     "DDL_MARKER_FIELDS",
     "ChangeBatch",
-    "ChangeOp",
     "ChangeRecord",
     "EventKind",
     "SchemaDiff",
@@ -48,17 +47,6 @@ class EventKind(str, Enum):
         if DDL_MARKER_FIELDS.issubset(field_names):
             return cls.SCHEMA_CHANGE
         return cls.DATA
-
-
-class ChangeOp(str, Enum):
-    """Debezium CDC operation type."""
-
-    INSERT = "c"
-    UPDATE = "u"
-    DELETE = "d"
-    READ = "r"
-    TRUNCATE = "t"
-    MESSAGE = "m"
 
 
 @dataclass(frozen=True, slots=True)
@@ -126,48 +114,12 @@ class TableSchema:
             return ()
         return self.value_handler.fields
 
-    @cached_property
-    def row_schema(self) -> pa.Schema:
-        """
-        Returns the unpacked table row schema when the event uses a Debezium
-        envelope (before/after/op), or `arrow_schema` for flattened events.
-        """
-        return self.extract_row_schema(self.arrow_schema)
-
-    @cached_property
-    def is_envelope(self) -> bool:
-        return self.row_schema is not self.arrow_schema
-
-    @staticmethod
-    def extract_row_schema(schema: pa.Schema) -> pa.Schema:
-        names = set(schema.names)
-        if "op" in names:
-            row_schemas = [
-                pa.schema(list(schema.field(c).type))
-                for c in ("after", "before")
-                if c in names and pa.types.is_struct(schema.field(c).type)
-            ]
-            if row_schemas:
-                return (
-                    row_schemas[0]
-                    if len(row_schemas) == 1 or row_schemas[0] == row_schemas[1]
-                    else pa.unify_schemas(row_schemas, promote_options="permissive")
-                )
-        return schema
-
-    def diff(
-        self,
-        previous: TableSchema | pa.Schema,
-        *,
-        use_row_schema: bool = True,
-    ) -> SchemaDiff:
+    def diff(self, previous: TableSchema | pa.Schema) -> SchemaDiff:
         """Computes the structural difference from `previous` schema to `self`."""
         old_pa = (
-            (previous.row_schema if use_row_schema else previous.arrow_schema)
-            if isinstance(previous, TableSchema)
-            else (self.extract_row_schema(previous) if use_row_schema else previous)
+            previous.arrow_schema if isinstance(previous, TableSchema) else previous
         )
-        new_pa = self.row_schema if use_row_schema else self.arrow_schema
+        new_pa = self.arrow_schema
 
         old_map: dict[str, pa.Field] = {f.name: f for f in old_pa}
         new_map: dict[str, pa.Field] = {f.name: f for f in new_pa}
@@ -209,43 +161,6 @@ class ChangeRecord:
             return EventKind.TOMBSTONE
         return self.schema.kind
 
-    @property
-    def op(self) -> ChangeOp | None:
-        """Debezium operation enum (INSERT, UPDATE, DELETE, READ, TRUNCATE, MESSAGE) if present."""
-        if self.value is None:
-            return None
-        val = self.value.get("op")
-        if val is None:
-            val = self.value.get("__op")
-        return ChangeOp(val) if val is not None else None
-
-    @property
-    def before(self) -> dict[str, Any] | None:
-        """Before-state payload dictionary if present in envelope value."""
-        return self.value.get("before") if self.value is not None else None
-
-    @property
-    def after(self) -> dict[str, Any] | None:
-        """After-state payload dictionary if present in envelope value."""
-        return self.value.get("after") if self.value is not None else None
-
-    @property
-    def source(self) -> dict[str, Any] | None:
-        """Debezium source metadata dictionary if present in envelope value."""
-        return self.value.get("source") if self.value is not None else None
-
-    @property
-    def data(self) -> dict[str, Any] | None:
-        """
-        Returns the active table row dictionary: `after` (or `before` on delete)
-        for envelope events, or `value` directly for flattened events.
-        """
-        if self.value is None or self.schema is None:
-            return None
-        if self.schema.is_envelope:
-            return self.after if self.after is not None else self.before
-        return self.value
-
 
 @dataclass(frozen=True, slots=True)
 class TableBatch:
@@ -262,21 +177,7 @@ class TableBatch:
     def rows(self) -> list[dict[str, Any]]:
         return [r.value for r in self.records if r.value is not None]
 
-    @property
-    def data_rows(self) -> list[dict[str, Any]]:
-        return [r.data for r in self.records if r.data is not None]
-
-    def to_arrow(
-        self,
-        target_schema: pa.Schema | None = None,
-        *,
-        extract_rows: bool = False,
-    ) -> pa.Table:
-        if extract_rows:
-            resolved = (
-                self.schema.row_schema if target_schema is None else target_schema
-            )
-            return pa.Table.from_pylist(self.data_rows, schema=resolved)
+    def to_arrow(self, target_schema: pa.Schema | None = None) -> pa.Table:
         resolved = self.schema.arrow_schema if target_schema is None else target_schema
         return pa.Table.from_pylist(self.rows, schema=resolved)
 

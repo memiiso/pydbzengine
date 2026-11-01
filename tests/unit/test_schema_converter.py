@@ -21,7 +21,6 @@ from pydbzengine.schema import (
     BinaryTypeHandler,
     BooleanTypeHandler,
     ChangeBatch,
-    ChangeOp,
     ConnectEventConverter,
     DateTypeHandler,
     DecimalTypeHandler,
@@ -215,7 +214,6 @@ class TestEventConverterAndTypeHandlers(unittest.TestCase):
         self.assertEqual(table_schema.key_schema.field("id").type, pa.int32())
         self.assertEqual(record.key, {"id": 1001})
         self.assertEqual(row["salary"], Decimal("199.95"))
-        self.assertEqual(record.data, row)
 
         pa_schema = table_schema.arrow_schema
         self.assertEqual(pa_schema.field("id").type, pa.int32())
@@ -284,14 +282,6 @@ class TestEventConverterAndTypeHandlers(unittest.TestCase):
                     "ts_ms": 1620000000000,
                 },
             ],
-        )
-
-        # Also verify extract_rows=True on envelope batch
-        row_tbl = tb.to_arrow(extract_rows=True)
-        self.assertEqual(row_tbl.schema.names, ["id", "name"])
-        self.assertEqual(
-            row_tbl.to_pylist(),
-            [{"id": 1, "name": "Alice"}, {"id": 1, "name": "Alice"}],
         )
 
     def test_to_arrow_batches_and_to_arrow_mid_batch_evolution(self) -> None:
@@ -1070,10 +1060,9 @@ class TestEventConverterAndTypeHandlers(unittest.TestCase):
         r_c = conv_env.convert_event(ev_c)
         r_d = conv_env.convert_event(ev_d)
         assert r_c.schema is not None and r_d.schema is not None
-        self.assertEqual(r_c.schema.row_schema, r_d.schema.row_schema)
-        self.assertFalse(r_d.schema.diff(r_c.schema).has_changes)
-        self.assertEqual(r_c.op, ChangeOp.INSERT)
-        self.assertEqual(r_d.op, ChangeOp.DELETE)
+        assert r_c.value is not None and r_d.value is not None
+        self.assertEqual(r_c.value["op"], "c")
+        self.assertEqual(r_d.value["op"], "d")
         tbl_env = conv_env.convert([ev_c, ev_d]).table_batches()[0].to_arrow()
         self.assertEqual(tbl_env.num_rows, 2)
 
@@ -1357,7 +1346,7 @@ class TestEventConverterAndTypeHandlers(unittest.TestCase):
             [{"id": 1, "scores": []}, {"id": 2, "scores": [10, 20]}],
         )
 
-        # Schemaless envelope UPDATE with None in before and int64 in after unifies row_schema
+        # Schemaless envelope UPDATE with None in before and int64 in after preserves raw PyArrow types
         r_env_upd = conv_sl.convert_event(
             MockChangeEvent(
                 key=json.dumps({"id": 1}),
@@ -1373,7 +1362,7 @@ class TestEventConverterAndTypeHandlers(unittest.TestCase):
         )
         assert r_env_upd.schema is not None
         self.assertEqual(
-            r_env_upd.schema.row_schema.field("age").type,
+            r_env_upd.schema.arrow_schema.field("after").type.field("age").type,
             pa.int64(),
         )
 

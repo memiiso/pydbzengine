@@ -7,7 +7,6 @@ import pyarrow as pa
 
 from pydbzengine.schema import (
     ChangeBatch,
-    ChangeOp,
     ChangeRecord,
     DecimalTypeHandler,
     EventKind,
@@ -79,8 +78,6 @@ class TestSchemaModels(unittest.TestCase):
         self.assertEqual(s1.names, ["id", "name"])
         self.assertEqual(s1.table_name, "customers")
         self.assertEqual(s1.value_schema, pa_s1)
-        self.assertFalse(s1.is_envelope)
-        self.assertEqual(s1.row_schema, pa_s1)
         self.assertEqual(s1.fields, ())
 
         # Additive evolution diff
@@ -129,7 +126,7 @@ class TestSchemaModels(unittest.TestCase):
         self.assertEqual(diff_break.changed_fields[0][0].type, pa.int32())
         self.assertEqual(diff_break.changed_fields[0][1].type, pa.int64())
 
-    def test_envelope_row_schema_and_record_data(self) -> None:
+    def test_envelope_record_and_batch_pass_through(self) -> None:
         row_fields = [
             pa.field("id", pa.int32(), nullable=False),
             pa.field("name", pa.string(), nullable=True),
@@ -148,8 +145,6 @@ class TestSchemaModels(unittest.TestCase):
             arrow_schema=env_pa,
             primary_keys=("id",),
         )
-        self.assertTrue(schema.is_envelope)
-        self.assertEqual(schema.row_schema, pa.schema(row_fields))
 
         create_rec = ChangeRecord(
             schema=schema,
@@ -164,33 +159,31 @@ class TestSchemaModels(unittest.TestCase):
         )
         self.assertEqual(create_rec.destination, "inventory.customers")
         self.assertEqual(create_rec.kind, EventKind.DATA)
-        self.assertEqual(create_rec.op, ChangeOp.INSERT)
-        self.assertIsNone(create_rec.before)
-        self.assertEqual(create_rec.after, {"id": 1, "name": "Alice"})
-        self.assertEqual(create_rec.source, {"db": "inventory"})
-        self.assertEqual(create_rec.data, {"id": 1, "name": "Alice"})
+        self.assertEqual(
+            create_rec.value,
+            {
+                "before": None,
+                "after": {"id": 1, "name": "Alice"},
+                "source": {"db": "inventory"},
+                "op": "c",
+            },
+        )
         self.assertEqual(create_rec.key, {"id": 1})
         self.assertEqual(create_rec.partition, 0)
 
-        delete_rec = ChangeRecord(
-            schema=schema,
-            value={
-                "before": {"id": 1, "name": "Alice"},
-                "after": None,
-                "source": {"db": "inventory"},
-                "op": "d",
-            },
-            key={"id": 1},
+        env_tbl = TableBatch(schema=schema, records=(create_rec,)).to_arrow()
+        self.assertEqual(env_tbl.schema, env_pa)
+        self.assertEqual(
+            env_tbl.to_pylist(),
+            [
+                {
+                    "before": None,
+                    "after": {"id": 1, "name": "Alice"},
+                    "source": {"db": "inventory"},
+                    "op": "c",
+                }
+            ],
         )
-        self.assertEqual(delete_rec.op, ChangeOp.DELETE)
-        self.assertEqual(delete_rec.data, {"id": 1, "name": "Alice"})
-
-        # Extract unpacked row table via TableBatch.to_arrow(extract_rows=True)
-        row_tbl = TableBatch(schema=schema, records=(create_rec,)).to_arrow(
-            extract_rows=True
-        )
-        self.assertEqual(row_tbl.schema, pa.schema(row_fields))
-        self.assertEqual(row_tbl.to_pylist(), [{"id": 1, "name": "Alice"}])
 
     def test_tombstone_change_record(self) -> None:
         schema = TableSchema(
@@ -202,11 +195,6 @@ class TestSchemaModels(unittest.TestCase):
         ts_with_schema = ChangeRecord(schema=schema, value=None, key={"id": 42})
         self.assertEqual(ts_with_schema.kind, EventKind.TOMBSTONE)
         self.assertIsNone(ts_with_schema.value)
-        self.assertIsNone(ts_with_schema.value)
-        self.assertIsNone(ts_with_schema.data)
-        self.assertIsNone(ts_with_schema.op)
-        self.assertIsNone(ts_with_schema.before)
-        self.assertIsNone(ts_with_schema.after)
         self.assertEqual(ts_with_schema.destination, "inventory.customers")
         self.assertEqual(ts_with_schema.key, {"id": 42})
 
@@ -315,49 +303,18 @@ class TestSchemaModels(unittest.TestCase):
         )
         diff = env_v2.diff(env_v1)
         self.assertTrue(diff.has_changes)
-        self.assertTrue(diff.is_additive)
         self.assertTrue(diff.is_compatible)
-        self.assertEqual([f.name for f in diff.added_fields], ["email"])
-        self.assertEqual(diff.changed_fields, ())
-
-        # Explicit use_row_schema=False diffs top-level envelope wrapper fields
-        env_diff = env_v2.diff(env_v1, use_row_schema=False)
         self.assertEqual(
-            [f[0].name for f in env_diff.changed_fields], ["before", "after"]
+            [f[0].name for f in diff.changed_fields], ["before", "after"]
         )
 
     def test_strict_model_validation_raises(self) -> None:
         valid_pa = pa.schema([pa.field("id", pa.int32())])
         s1 = TableSchema(destination="t1", kind=EventKind.DATA, arrow_schema=valid_pa)
 
-        # Both "op" and "__op" are supported; unknown op codes raise ValueError
-        self.assertEqual(ChangeRecord(s1, {"__op": "c"}).op, ChangeOp.INSERT)
-        self.assertEqual(ChangeRecord(s1, {"__op": "d"}).op, ChangeOp.DELETE)
-        with self.assertRaises(ValueError):
-            _ = ChangeRecord(s1, {"op": "invalid_op"}).op
-
         ts = ChangeRecord(s1, None, key={"id": 1})
         with self.assertRaises(ValueError):
             ChangeBatch(records=(ts,)).table_batches(kind=EventKind.TOMBSTONE)
-
-        env_schema = TableSchema(
-            destination="t1",
-            kind=EventKind.DATA,
-            arrow_schema=pa.schema(
-                [
-                    pa.field("before", pa.struct([pa.field("id", pa.int32())])),
-                    pa.field("after", pa.struct([pa.field("id", pa.int32())])),
-                    pa.field("op", pa.string()),
-                ]
-            ),
-        )
-        empty_env_batch = TableBatch(
-            schema=env_schema,
-            records=(
-                ChangeRecord(env_schema, {"before": None, "after": None, "op": "m"}),
-            ),
-        )
-        self.assertEqual(empty_env_batch.data_rows, [])
 
         # Recursive SchemaDiff.is_compatible via native PyArrow schema unification
         s_old = TableSchema(

@@ -20,7 +20,7 @@ The subsystem is built around five foundational design decisions:
 3. **Apache Arrow as the Global Reusable Format via Table Batch**:
    Apache Arrow is the universal schema and tabular representation across the subsystem. The per-destination **Table Batch** is the primary carrier pairing the compiled **Table Schema** with converted records/rows and direct Apache Arrow Table materialization.
 4. **Minimalist Enum-Driven Event Semantics & Standard Tombstone Processing**:
-   - Every converted record exposes its event category via a single **Event Kind** enum property (**Data**, **Heartbeat**, **Schema Change**, **Tombstone**) and its CDC operation via a single **Change Operation** enum property (**Insert**, **Update**, **Delete**, **Read**, **Truncate**, **Message**)—eliminating redundant boolean wrapper methods.
+   - Every converted record exposes its event category via a single **Event Kind** enum property (**Data**, **Heartbeat**, **Schema Change**, **Tombstone**), passing converted schemas, values, and keys straight through without envelope unwrapping or redundant boolean wrapper methods.
    - Tombstones (events with a null value/payload) follow standard processing without special tombstone-synthesis branches: they are flagged with the **Tombstone** event kind, extract their key and schema normally if present, and allow the record schema to be null when the value is null.
 5. **Schema-Aware Consumer Handler Inside the Schema Subsystem**:
    The **Schema-Aware Change Handler** lives inside the schema subsystem (ensuring the core engine never depends on the schema package). It tracks active schemas per destination, computes structural diffs via **Schema Diff** utilities, and dispatches clean lifecycle hooks (**Table Created**, **Schema Evolved**, and **Handle Table Batch**).
@@ -71,10 +71,10 @@ Each data type family is modeled as a distinct, self-contained handler class wit
     - **Map Handler**: Converts typed key-value maps and PostgreSQL Hstore fields into Arrow map types, enforcing non-null scalar keys and coercing stringified JSON keys back to their declared scalar types.
 
 ### 3. Domain Entities: Table Schema, Schema Diff, Change Record, Table Batch, and Change Batch
-- **Table Schema**: Immutable descriptor for a destination's schema, holding the destination name, derived table name, **Event Kind**, full event Apache Arrow schema, unpacked row Apache Arrow schema, optional key Apache Arrow schema, validated scalar primary key names, and optional bound conversion handlers.
+- **Table Schema**: Immutable descriptor for a destination's schema, holding the destination name, derived table name, **Event Kind**, Apache Arrow schema, optional key Apache Arrow schema, primary key names, and optional bound conversion handlers.
 - **Schema Diff**: Structural comparison result between a previous **Table Schema** and a new **Table Schema**, exposing added fields, removed fields, changed field pairs, and boolean properties for whether changes exist, whether the evolution is strictly additive, and whether the evolution is backward-compatible.
-- **Change Record**: Immutable converted event holding the destination, partition, converted value dictionary (null for tombstones), converted key dictionary, optional **Table Schema** (null when the event is a tombstone with no schema), **Event Kind** enum property (**Data**, **Heartbeat**, **Schema Change**, **Tombstone**), **Change Operation** enum property (**Insert**, **Update**, **Delete**, **Read**, **Truncate**, **Message**, or null), and envelope accessors (before state, after state, source metadata, and unpacked active row data).
-- **Table Batch**: Homogeneous run of consecutive converted records for a single destination sharing the same **Table Schema**. Serves as the sole Apache Arrow Table materializer, exposing full envelope rows, unpacked table rows, and direct conversion to an Apache Arrow Table.
+- **Change Record**: Immutable converted event holding the destination, partition, converted value dictionary (null for tombstones), converted key dictionary, optional **Table Schema** (null when the event is a tombstone with no schema), and **Event Kind** enum property (**Data**, **Heartbeat**, **Schema Change**, **Tombstone**).
+- **Table Batch**: Homogeneous run of consecutive converted records for a single destination sharing the same **Table Schema**. Serves as the sole Apache Arrow Table materializer, exposing converted `rows` and direct conversion to an Apache Arrow Table via `to_arrow(target_schema)`.
 - **Change Batch**: Top-level container returned by batch conversion, holding the ordered tuple of converted **Change Record** items and slicing them by destination into homogeneous **Table Batch** runs.
 
 ---
@@ -146,8 +146,7 @@ Each data type family is modeled as a distinct, self-contained handler class wit
 - **Status**: Implemented
 - **Specification Details**:
   1. **Schemaless JSON Event Converter** must infer an Apache Arrow schema per destination from each batch of raw JSON payloads directly via PyArrow (`pa.Table.from_pylist(rows).schema`).
-  2. For Debezium envelope payloads, **Table Schema** row-schema extraction must unify `before` and `after` struct schemas via `pa.unify_schemas(..., promote_options="permissive")`.
-  3. **Schema Diff** compatibility checks (`is_compatible`) must delegate to PyArrow's native C++ `pa.unify_schemas([new_s, old_s], promote_options="default")` so promotion of `pa.null()` fields to concrete types at any nesting depth is recognized as compatible without custom metadata tags.
+  2. **Schema Diff** compatibility checks (`is_compatible`) must delegate to PyArrow's native C++ `pa.unify_schemas([new_s, old_s], promote_options="default")` so promotion of `pa.null()` fields to concrete types at any nesting depth is recognized as compatible without custom metadata tags.
 
 ### Requirement 9: Key Conversion and Primary Key Resolution
 - **Goal**: Convert event keys using compiled key handlers inside the converters and resolve primary key column names from the key schema.
@@ -156,20 +155,18 @@ Each data type family is modeled as a distinct, self-contained handler class wit
   1. In Connect and Schema-Enabled JSON modes, event keys must be converted using the compiled key handler inside the respective converter (supporting struct keys, map keys, and single-field scalar keys wrapped as `{"key": value}`). In Schemaless JSON mode, keys are parsed directly as JSON dictionaries.
   2. Primary key column names are derived directly from `key_schema.names` (or explicit `primary_keys`).
 
-### Requirement 10: Single Enum Properties for Event Kind & Operation Type, and Standard Tombstone Processing
-- **Goal**: Keep **Change Record** simple and free of boolean wrapper bloat by exposing single enum properties for event category and operation type, and processing tombstones through the standard pipeline.
+### Requirement 10: Single Enum Property for Event Kind & Standard Tombstone Processing
+- **Goal**: Keep **Change Record** simple and raw by exposing a single enum property for event category, passing converted values straight through, and processing tombstones through the standard pipeline.
 - **Status**: Implemented
 - **Specification Details**:
-  1. **Single Event Kind Enum Property**: **Change Record** must expose a single `kind` property returning an **Event Kind** enum with four values: **Data**, **Heartbeat**, **Schema Change**, and **Tombstone**. Redundant boolean wrapper properties (`is_data`, `is_heartbeat`, `is_schema_change`, `is_tombstone`) must not be defined.
-  2. **Single Change Operation Enum Property**: **Change Record** must expose a single `op` property (reading `"op"` or `"__op"` for flattened records) returning a **Change Operation** enum (**Insert** for `'c'`, **Update** for `'u'`, **Delete** for `'d'`, **Read** for `'r'`, **Truncate** for `'t'`, **Message** for `'m'`, or null when absent/tombstone). Redundant boolean wrapper properties (`is_insert`, `is_update`, `is_delete`, `is_read`) must not be defined.
-  3. **Minimal, Standard Tombstone Processing**: When an event's value or payload is null, the converter must not synthesize a fake key-backed value **Table Schema** or branch into special tombstone builders. It must simply set the record's **Event Kind** to **Tombstone**, extract the schema normally if present (allowing `schema` on the record to be null when the value is null), and convert the key normally.
-  4. **Row State Accessors**: **Change Record** must expose properties for `before`, `after`, `source`, and active row `data` (returning `after` when present, `before` on delete, or the flat value dictionary for unwrapped events), without a single-record `to_arrow` method.
+  1. **Single Event Kind Enum Property**: **Change Record** must expose a single `kind` property returning an **Event Kind** enum with four values: **Data**, **Heartbeat**, **Schema Change**, and **Tombstone**. Redundant boolean wrapper properties (`is_data`, `is_heartbeat`, `is_schema_change`, `is_tombstone`) and envelope-unwrapping helpers must not be defined.
+  2. **Minimal, Standard Tombstone Processing**: When an event's value or payload is null, the converter must not synthesize a fake key-backed value **Table Schema** or branch into special tombstone builders. It must simply set the record's **Event Kind** to **Tombstone**, extract the schema normally if present (allowing `schema` on the record to be null when the value is null), and convert the key normally.
 
 ### Requirement 11: Table Batch as the Primary Arrow + Rows Carrier & Schema Diff Utilities
 - **Goal**: Group converted records into homogeneous per-destination **Table Batch** objects that own Apache Arrow Table materialization, paired with **Schema Diff** utilities.
 - **Status**: Implemented
 - **Specification Details**:
-  1. **Table Batch (Arrow Schema + Rows)**: Groups consecutive converted records sharing the same destination and **Table Schema**. Exposes full envelope `rows`, unpacked table `data_rows`, and `to_arrow(target_schema, extract_rows)` to materialize an Apache Arrow Table directly.
+  1. **Table Batch (Arrow Schema + Rows)**: Groups consecutive converted records sharing the same destination and **Table Schema**. Exposes `rows` and `to_arrow(target_schema)` to materialize an Apache Arrow Table directly.
   2. **Change Batch**: Holds the tuple of converted **Change Record** items in arrival order without silent post-init mutation, provides filtering by **Event Kind**, and slices records by destination into homogeneous **Table Batch** runs whenever a destination's schema evolves. Does not expose a fragile batch-wide `to_arrow` method.
   3. **Schema Diff Utilities**: **Table Schema** must provide a `diff(previous)` method returning a **Schema Diff** with added fields, removed fields, changed field pairs, `has_changes`, `is_additive`, and `is_compatible`.
 

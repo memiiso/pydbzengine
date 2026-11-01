@@ -10,7 +10,6 @@ from pydbzengine.schema.converter import (
 from pydbzengine.schema.handler import SchemaAwareChangeHandler
 from pydbzengine.schema.models import (
     ChangeBatch,
-    ChangeOp,
     ChangeRecord,
     EventKind,
     SchemaDiff,
@@ -47,7 +46,6 @@ __all__ = [
     "BinaryTypeHandler",
     "BooleanTypeHandler",
     "ChangeBatch",
-    "ChangeOp",
     "ChangeRecord",
     "ConnectEventConverter",
     "DataTypeHandler",
