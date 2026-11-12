@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from functools import cached_property
 from typing import TYPE_CHECKING, Any
 
@@ -20,7 +21,7 @@ class DebeziumEngine(LoggingMixin):
 
     def __init__(
         self,
-        properties: dict[str, Any],
+        properties: Mapping[str, Any] | DebeziumConfig,
         handler: BasePythonChangeHandler,
         format: str | EventFormat | None = None,
         jvm_opts: list[str] | None = None,
@@ -40,7 +41,17 @@ class DebeziumEngine(LoggingMixin):
         self.extra_classpaths = extra_classpaths
         self.jvm_path = jvm_path
         self._engine: Any = None
-        self.config = DebeziumConfig(properties=properties, format=format)
+        if isinstance(properties, DebeziumConfig):
+            if format is not None:
+                resolved_fmt = EventFormat.resolve_from(format)
+                if resolved_fmt is not properties.format:
+                    raise ValueError(
+                        f"Conflicting format configuration: explicit format {resolved_fmt.value!r} "
+                        f"does not match DebeziumConfig format {properties.format.value!r}."
+                    )
+            self.config = properties
+        else:
+            self.config = DebeziumConfig(properties=properties, format=format)
 
         self.handler.configure(config=self.config)
 
@@ -75,8 +86,8 @@ class DebeziumEngine(LoggingMixin):
         engine_format = self._resolve_format()
 
         java_props = JProperties()
-        for key, value in self.config.properties.items():
-            java_props.setProperty(str(key), str(value))
+        for key, value in self.config.to_engine_properties().items():
+            java_props.setProperty(key, value)
 
         return (
             JDebeziumEngine.create(engine_format)
@@ -132,7 +143,7 @@ class DebeziumJsonEngine(DebeziumEngine):
 
     def __init__(
         self,
-        properties: dict[str, Any],
+        properties: Mapping[str, Any] | DebeziumConfig,
         handler: BasePythonChangeHandler,
         jvm_opts: list[str] | None = None,
         extra_classpaths: list[str] | None = None,

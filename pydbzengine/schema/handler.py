@@ -8,10 +8,13 @@ from pydbzengine.engine.config import DebeziumConfig
 from pydbzengine.schema.converter import EventConverter
 from pydbzengine.schema.models import (
     ChangeBatch,
+    ChangeRecord,
+    EventKind,
     SchemaDiff,
     TableBatch,
     TableSchema,
 )
+from pydbzengine.schema.types import TypeRegistry
 
 __all__ = [
     "SchemaAwareChangeHandler",
@@ -30,12 +33,26 @@ class SchemaAwareChangeHandler(BasePythonChangeHandler):
     def __init__(
         self,
         *,
+        converter: EventConverter | None = None,
+        config: DebeziumConfig | None = None,
         default_variable_scale: int = 10,
     ) -> None:
         super().__init__()
-        self.default_variable_scale: int = default_variable_scale
-        self.converter: EventConverter | None = None
+        self.default_variable_scale: int = TypeRegistry.validate_variable_scale(
+            default_variable_scale
+        )
+        if converter is not None and config is not None:
+            raise ValueError(
+                "Pass either 'converter' or 'config' to SchemaAwareChangeHandler, not both."
+            )
+        if converter is not None and not isinstance(converter, EventConverter):
+            raise TypeError(
+                f"Expected EventConverter for converter, got {type(converter).__name__}"
+            )
+        self.converter: EventConverter | None = converter
         self._schemas: dict[str, TableSchema] = {}
+        if config is not None:
+            self.configure(config)
 
     def configure(self, config: DebeziumConfig) -> None:
         self.converter = EventConverter.from_config(
@@ -66,22 +83,30 @@ class SchemaAwareChangeHandler(BasePythonChangeHandler):
 
     def handle_change_batch(self, batch: ChangeBatch) -> None:
         """
-        Routes a converted ChangeBatch into lifecycle hooks (`on_table_created`,
-        `on_schema_evolved`) and per-table `handle_table_batch`.
+        Routes a converted ChangeBatch in causal order into lifecycle hooks
+        (`on_table_created`, `on_schema_evolved`, `on_tombstone`,
+        `on_schema_change`, `on_heartbeat`) and per-table `handle_table_batch`.
         """
-        for table_batch in batch.table_batches():
-            dest = table_batch.destination
-            new_schema = table_batch.schema
-            old_schema = self._schemas.get(dest)
-            if old_schema is None:
-                self._schemas[dest] = new_schema
-                self.on_table_created(new_schema)
-            elif new_schema != old_schema:
-                diff = new_schema.diff(old_schema)
-                self._schemas[dest] = new_schema
-                if diff.has_changes:
-                    self.on_schema_evolved(new_schema, old_schema, diff)
-            self.handle_table_batch(table_batch)
+        for item in batch.destination_events():
+            if isinstance(item, TableBatch):
+                dest = item.destination
+                new_schema = item.schema
+                old_schema = self._schemas.get(dest)
+                if old_schema is None:
+                    self.on_table_created(new_schema)
+                    self._schemas[dest] = new_schema
+                elif new_schema != old_schema:
+                    diff = new_schema.diff(old_schema)
+                    if diff.has_changes:
+                        self.on_schema_evolved(new_schema, old_schema, diff)
+                    self._schemas[dest] = new_schema
+                self.handle_table_batch(item)
+            elif item.kind is EventKind.TOMBSTONE:
+                self.on_tombstone(item)
+            elif item.kind is EventKind.SCHEMA_CHANGE:
+                self.on_schema_change(item)
+            elif item.kind is EventKind.HEARTBEAT:
+                self.on_heartbeat(item)
 
     def on_table_created(self, schema: TableSchema) -> None:
         """Invoked the first time a data TableSchema is observed for a destination."""
@@ -96,3 +121,12 @@ class SchemaAwareChangeHandler(BasePythonChangeHandler):
 
     def handle_table_batch(self, batch: TableBatch) -> None:
         """Invoked for each homogeneous TableBatch of data records."""
+
+    def on_tombstone(self, record: ChangeRecord) -> None:
+        """Invoked for each delete tombstone ChangeRecord in the batch."""
+
+    def on_schema_change(self, record: ChangeRecord) -> None:
+        """Invoked for each DDL schema_change ChangeRecord in the batch."""
+
+    def on_heartbeat(self, record: ChangeRecord) -> None:
+        """Invoked for each heartbeat ChangeRecord in the batch."""

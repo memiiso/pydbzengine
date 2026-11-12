@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from types import MappingProxyType
 
 from pydbzengine import (
     DebeziumConfig,
@@ -12,10 +13,14 @@ from pydbzengine.engine import (
 )
 from pydbzengine.schema import (
     ConnectEventConverter,
+    DataTypeHandler,
     EventConverter,
+    FieldSpec,
     JsonEventConverter,
     SchemaAwareChangeHandler,
+    SchemaField,
     SchemalessJsonEventConverter,
+    TypeRegistry,
 )
 from pydbzengine.schema import (
     EventFormat as SchemaEventFormat,
@@ -32,6 +37,8 @@ class TestEventConverterConfig(unittest.TestCase):
         self.assertEqual(EventFormat.CONNECT, "connect")
         self.assertIs(EventFormat, EngineEventFormat)
         self.assertIs(EventFormat, SchemaEventFormat)
+        for exported in (DataTypeHandler, FieldSpec, SchemaField, TypeRegistry):
+            self.assertIsNotNone(exported)
 
     def test_unconfigured_initial_state_and_fail_fast(self) -> None:
         handler = DummySchemaHandler()
@@ -48,7 +55,7 @@ class TestEventConverterConfig(unittest.TestCase):
         handler = DummySchemaHandler()
         handler.configure(DebeziumConfig({}))
         self.assertIsInstance(handler.converter, JsonEventConverter)
-        assert handler.converter is not None
+        assert isinstance(handler.converter, JsonEventConverter)
         self.assertEqual(handler.converter.format, EventFormat.JSON)
         self.assertTrue(handler.converter.schemas_enabled)
         self.assertEqual(
@@ -110,6 +117,7 @@ class TestEventConverterConfig(unittest.TestCase):
         conv_schemaless = SchemalessJsonEventConverter()
         self.assertEqual(conv_schemaless.format, EventFormat.JSON)
         self.assertFalse(conv_schemaless.schemas_enabled)
+        self.assertNotIn("registry", vars(conv_schemaless))
 
         conv_connect = ConnectEventConverter()
         self.assertEqual(conv_connect.format, EventFormat.CONNECT)
@@ -262,12 +270,28 @@ class TestEventConverterConfig(unittest.TestCase):
     def test_debezium_config_format_resolution_and_conflicts(self) -> None:
         self.assertEqual(DebeziumConfig({}).format, EventFormat.JSON)
         self.assertEqual(
-            DebeziumConfig({"engine.format": "io.debezium.embedded.Connect"}).format,
+            DebeziumConfig({"converter.class": "io.debezium.embedded.Connect"}).format,
             EventFormat.CONNECT,
         )
         self.assertEqual(
             DebeziumConfig(
                 {"value.converter": "org.apache.kafka.connect.storage.ConnectConverter"}
+            ).format,
+            EventFormat.CONNECT,
+        )
+        self.assertEqual(
+            DebeziumConfig(
+                {
+                    "value.converter.class": "org.apache.kafka.connect.storage.ConnectConverter"
+                }
+            ).format,
+            EventFormat.CONNECT,
+        )
+        self.assertEqual(
+            DebeziumConfig(
+                {
+                    "key.converter.class": "org.apache.kafka.connect.storage.ConnectConverter"
+                }
             ).format,
             EventFormat.CONNECT,
         )
@@ -287,7 +311,7 @@ class TestEventConverterConfig(unittest.TestCase):
         ):
             DebeziumConfig(
                 {
-                    "format": "json",
+                    "converter.class": "org.apache.kafka.connect.json.JsonConverter",
                     "value.converter": "org.apache.kafka.connect.storage.ConnectConverter",
                 }
             )
@@ -296,9 +320,115 @@ class TestEventConverterConfig(unittest.TestCase):
             "Conflicting format configuration: explicit format .* does not match property format",
         ):
             DebeziumConfig(
-                {"format": "connect"},
+                {"converter.class": "io.debezium.embedded.Connect"},
                 format="json",
             )
+
+    def test_debezium_config_mapping_jproperties_and_immutability(self) -> None:
+        from pydbzengine.engine.jvm import ensure_jvm_started
+
+        ensure_jvm_started()
+        from pydbzengine.engine._jvm import JProperties
+
+        raw_dict = {"name": "pg-conn", "schemas.enable": "false"}
+        cfg_from_dict = DebeziumConfig(raw_dict)
+        raw_dict["schemas.enable"] = "true"
+        raw_dict["injected"] = "ignored"
+        self.assertFalse(cfg_from_dict.schemas_enabled)
+        self.assertNotIn("injected", cfg_from_dict.properties)
+        with self.assertRaises(TypeError):
+            cfg_from_dict.properties["name"] = "mutated"  # type: ignore[index]
+
+        cfg_from_proxy = DebeziumConfig(
+            MappingProxyType({"name": "proxy-conn", "topic.heartbeat.prefix": "hb"})
+        )
+        self.assertEqual(cfg_from_proxy.heartbeat_prefix, "hb")
+
+        j_props = JProperties()
+        j_props.setProperty("name", "java-conn")
+        j_props.setProperty("converter.schemas.enable", "false")
+        j_props.setProperty("topic.heartbeat.prefix", "java_hb")
+
+        handler = DummySchemaHandler()
+        engine = DebeziumEngine(properties=j_props, handler=handler)
+        self.assertFalse(engine.config.schemas_enabled)
+        self.assertEqual(engine.config.heartbeat_prefix, "java_hb")
+        self.assertIsInstance(handler.converter, SchemalessJsonEventConverter)
+
+    def test_debezium_config_kwargs_conflicts_and_to_engine_properties(self) -> None:
+        cfg_kw = DebeziumConfig(
+            {"name": "c1"},
+            schemas_enabled=False,
+            heartbeat_prefix="  custom_hb  ",
+        )
+        self.assertFalse(cfg_kw.schemas_enabled)
+        self.assertEqual(cfg_kw.heartbeat_prefix, "custom_hb")
+        engine_props = cfg_kw.to_engine_properties()
+        self.assertEqual(engine_props["converter.schemas.enable"], "false")
+        self.assertEqual(engine_props["topic.heartbeat.prefix"], "custom_hb")
+
+        # Top-level schemas.enable=false is canonicalized to converter.schemas.enable=false for Java ConverterBuilder
+        cfg_top_level = DebeziumConfig({"name": "c2", "schemas.enable": False})
+        self.assertEqual(
+            cfg_top_level.to_engine_properties()["converter.schemas.enable"],
+            "false",
+        )
+
+        # Standalone empty DebeziumConfig() works without passing {}
+        cfg_standalone = DebeziumConfig(schemas_enabled=False)
+        self.assertFalse(cfg_standalone.schemas_enabled)
+        self.assertEqual(cfg_standalone.format, EventFormat.JSON)
+
+        # DebeziumEngine accepts a pre-built DebeziumConfig directly
+        handler = DummySchemaHandler()
+        engine = DebeziumEngine(properties=cfg_kw, handler=handler)
+        self.assertIs(engine.config, cfg_kw)
+        self.assertIsInstance(handler.converter, SchemalessJsonEventConverter)
+
+        # Conflict validations
+        with self.assertRaisesRegex(ValueError, "CONNECT always carries schemas"):
+            DebeziumConfig(format="connect", schemas_enabled=False)
+        with self.assertRaisesRegex(ValueError, "Conflicting schema configuration"):
+            DebeziumConfig({"schemas.enable": "false"}, schemas_enabled=True)
+        with self.assertRaisesRegex(ValueError, "Conflicting schema configuration"):
+            DebeziumConfig(
+                {"converter.schemas.enable": "true", "schemas.enable": "false"}
+            )
+        with self.assertRaisesRegex(
+            ValueError, "Conflicting heartbeat_prefix configuration"
+        ):
+            DebeziumConfig({"topic.heartbeat.prefix": "hb_a"}, heartbeat_prefix="hb_b")
+        with self.assertRaises(ValueError):
+            DebeziumConfig(heartbeat_prefix="   ")
+        with self.assertRaises(TypeError):
+            DebeziumConfig(schemas_enabled="false")  # type: ignore[arg-type]
+        with self.assertRaisesRegex(ValueError, "Conflicting format configuration"):
+            DebeziumEngine(
+                properties=DebeziumConfig({"name": "c"}, format="connect"),
+                handler=DummySchemaHandler(),
+                format="json",
+            )
+
+    def test_schema_aware_change_handler_standalone_init_and_validation(self) -> None:
+        h_cfg = DummySchemaHandler(config=DebeziumConfig(schemas_enabled=False))
+        self.assertIsInstance(h_cfg.converter, SchemalessJsonEventConverter)
+        self.assertEqual(h_cfg.handle_batch([]), 0)
+
+        custom_conv = JsonEventConverter(heartbeat_prefix="standalone_hb")
+        h_conv = DummySchemaHandler(converter=custom_conv)
+        self.assertIs(h_conv.converter, custom_conv)
+        self.assertEqual(h_conv.handle_batch([]), 0)
+
+        with self.assertRaisesRegex(ValueError, "not both"):
+            DummySchemaHandler(
+                converter=custom_conv,
+                config=DebeziumConfig(),
+            )
+        with self.assertRaises(TypeError):
+            DummySchemaHandler(converter="not_a_converter")  # type: ignore[arg-type]
+        for bad_scale in (-1, 39, True):
+            with self.assertRaises(ValueError):
+                DummySchemaHandler(default_variable_scale=bad_scale)
 
 
 if __name__ == "__main__":
