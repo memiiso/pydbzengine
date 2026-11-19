@@ -123,7 +123,7 @@ In default Debezium envelope mode, access fields directly on `record.value` (for
 - **`TableBatch`**: Groups consecutive `EventKind.DATA` records for one destination sharing a single `TableSchema` (supports `len()` and iteration).
   - `batch.destination -> str`: Shortcut for `batch.schema.destination`.
   - `batch.rows -> list[dict[str, Any]]`: Converted `record.value` dictionaries matching `schema.arrow_schema`.
-  - `batch.to_arrow(target_schema: pa.Schema | None = None) -> pa.Table`: Materializes a `pyarrow.Table` from `batch.rows` using `schema.arrow_schema`. When `target_schema` is provided and differs from `schema.arrow_schema`, `to_arrow()` aligns/reorders columns, casts existing columns via PyArrow (including temporal unit scaling and, with `pyarrow>=19.0.0`, nested struct evolution on `before`/`after` fields), fills missing nullable target columns with nulls, and recursively validates target nullability across top-level columns, structs, lists, and maps.
+  - `batch.to_arrow(target_schema: pa.Schema | None = None) -> pa.Table`: Materializes a `pyarrow.Table` from `batch.rows` using `schema.arrow_schema`. When `target_schema` is provided and differs from `schema.arrow_schema`, `to_arrow()` aligns/reorders top-level columns, casts existing columns via PyArrow (including temporal unit scaling and, with `pyarrow>=19.0.0`, nested struct evolution on `before`/`after` fields for nullable subfield additions, drops, and widenings preserving surviving subfield order; subfield reordering requires `pyarrow>=21.0.0`), fills missing nullable target columns with nulls, and recursively validates target nullability across top-level columns, structs, lists, and maps.
 
 ---
 

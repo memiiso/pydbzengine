@@ -282,12 +282,9 @@ class SnowflakeChangeHandler(SchemaAwareChangeHandler):
 
         with self.conn.cursor() as cur:
             cur.execute(
-                f"CREATE TEMPORARY TABLE IF NOT EXISTS {stage_fqn} LIKE {table_fqn}"
+                f"CREATE OR REPLACE TEMPORARY TABLE {stage_fqn} LIKE {table_fqn}"
             )
-            cur.execute(
-                f'ALTER TABLE {stage_fqn} ADD COLUMN IF NOT EXISTS "__CDC_OP" VARCHAR'
-            )
-            cur.execute(f"TRUNCATE TABLE {stage_fqn}")
+            cur.execute(f'ALTER TABLE {stage_fqn} ADD COLUMN "__CDC_OP" VARCHAR')
 
         write_pandas(
             conn=self.conn,
@@ -393,7 +390,7 @@ When writing heterogeneous historical batches into a single target table schema 
 aligned_table = table_batch.to_arrow(target_schema=latest_table_schema.arrow_schema)
 ```
 
-`to_arrow(target_schema=...)` projects and reorders columns, casts widened types (including temporal units and nested struct fields), fills missing nullable columns with nulls, and enforces target nullability constraints recursively.
+`to_arrow(target_schema=...)` projects and reorders top-level columns, casts widened types (including temporal units and nested struct subfield additions, drops, and widenings while preserving surviving subfield order on `pyarrow>=19.0.0`, or full subfield reordering on `pyarrow>=21.0.0`), fills missing nullable columns with nulls, and enforces target nullability constraints recursively.
 
 ### Standalone `EventConverter` Usage
 `EventConverter` can also be used directly without subclassing `SchemaAwareChangeHandler`:
