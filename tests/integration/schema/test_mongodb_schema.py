@@ -12,13 +12,9 @@ import pytest
 
 from pydbzengine import DebeziumEngine, EventFormat
 from pydbzengine.schema import (
-    ChangeOp,
     ConnectEventConverter,
     EventKind,
     JsonEventConverter,
-    SchemalessJsonEventConverter,
-    StringTypeHandler,
-    StructTypeHandler,
 )
 from tests.integration.schema.base import RecordingSchemaChangeHandler
 from tests.support import BaseMongoDbTest
@@ -28,11 +24,10 @@ from tests.support import BaseMongoDbTest
 class TestMongoDbSchemaIntegration(BaseMongoDbTest):
     """
     End-to-end MongoDB CDC schema integration tests against a real MongoDB
-    replica-set container and SchemaAwareChangeHandler consumer across all
-    three converter modes:
+    replica-set container and SchemaAwareChangeHandler consumer in both
+    schema-enabled converter modes:
     1. JSON with schemas enabled (JsonEventConverter)
     2. Connect mode (ConnectEventConverter)
-    3. Schemaless JSON mode (SchemalessJsonEventConverter)
     """
 
     def _prepare_collection(self, suffix: str) -> str:
@@ -141,9 +136,10 @@ class TestMongoDbSchemaIntegration(BaseMongoDbTest):
         threading.Thread(target=_mutate_mongo, daemon=True).start()
         self.run_mongo_consumer(engine, handler)
 
-        # 1. Verify TableSchema & Handler Types
+        # 1. Verify TableSchema & PyArrow Types
         self.assertEqual(len(handler.created_schemas), 1)
         table_schema = handler.created_schemas[0]
+        self.assertEqual(table_schema.key_fields, ("id",))
         envelope_schema = table_schema.arrow_schema
         self.assertEqual(envelope_schema.field("after").type, pa.string())
         self.assertTrue(
@@ -151,27 +147,30 @@ class TestMongoDbSchemaIntegration(BaseMongoDbTest):
         )
         self.assertTrue(pa.types.is_struct(envelope_schema.field("source").type))
 
-        assert table_schema.value_handler is not None
-        field_handlers = dict(
-            (f.name, f.handler) for f in table_schema.value_handler.fields
-        )
-        self.assertIsInstance(field_handlers["after"], StringTypeHandler)
-        self.assertIsInstance(field_handlers["updateDescription"], StructTypeHandler)
-
         # 2. Verify Operations and Tombstone
-        ops = [r.op for r in handler.records if r.kind is EventKind.DATA]
-        self.assertIn(ChangeOp.READ, ops)
-        self.assertIn(ChangeOp.INSERT, ops)
-        self.assertIn(ChangeOp.UPDATE, ops)
-        self.assertIn(ChangeOp.DELETE, ops)
+        ops = [
+            r.value["op"]
+            for r in handler.records
+            if r.kind is EventKind.DATA and r.value is not None
+        ]
+        self.assertIn("r", ops)
+        self.assertIn("c", ops)
+        self.assertIn("u", ops)
+        self.assertIn("d", ops)
 
         tombstones = [r for r in handler.records if r.kind is EventKind.TOMBSTONE]
         self.assertGreaterEqual(len(tombstones), 1)
-        self.assertIsNone(tombstones[0].row)
+        self.assertIsNone(tombstones[0].value)
         self.assertIsNotNone(tombstones[0].key)
 
         # 3. Verify Parsed Document Content and Arrow Table Materialization
-        read_rec = next(r for r in handler.records if r.op is ChangeOp.READ)
+        read_rec = next(
+            r
+            for r in handler.records
+            if r.kind is EventKind.DATA
+            and r.value is not None
+            and r.value.get("op") == "r"
+        )
         assert read_rec.value is not None
         raw_after = read_rec.value["after"]
         self.assertIsInstance(raw_after, str)
@@ -184,10 +183,7 @@ class TestMongoDbSchemaIntegration(BaseMongoDbTest):
 
     def test_mongodb_connect_mode_crud_and_arrow_materialization(self) -> None:
         coll_name = self._prepare_collection("connect_mode")
-        props = self.create_isolated_mongo_config(
-            collection_name=coll_name,
-            custom_props={"format": "connect"},
-        )
+        props = self.create_isolated_mongo_config(collection_name=coll_name)
         handler = RecordingSchemaChangeHandler(
             target_table=coll_name,
             expected_count=5,
@@ -215,52 +211,33 @@ class TestMongoDbSchemaIntegration(BaseMongoDbTest):
         self.run_mongo_consumer(engine, handler)
 
         self.assertEqual(len(handler.created_schemas), 1)
-        ops = [r.op for r in handler.records if r.kind is EventKind.DATA]
-        self.assertIn(ChangeOp.READ, ops)
-        self.assertIn(ChangeOp.INSERT, ops)
-        self.assertIn(ChangeOp.UPDATE, ops)
-        self.assertIn(ChangeOp.DELETE, ops)
+        self.assertEqual(handler.created_schemas[0].key_fields, ("id",))
+        ops = [
+            r.value["op"]
+            for r in handler.records
+            if r.kind is EventKind.DATA and r.value is not None
+        ]
+        self.assertIn("r", ops)
+        self.assertIn("c", ops)
+        self.assertIn("u", ops)
+        self.assertIn("d", ops)
 
         tombstones = [r for r in handler.records if r.kind is EventKind.TOMBSTONE]
         self.assertGreaterEqual(len(tombstones), 1)
+        self.assertIsNone(tombstones[0].value)
+        self.assertIsNotNone(tombstones[0].key)
 
-        arrow_tbl = handler.table_batches[0].to_arrow()
-        self.assertGreaterEqual(arrow_tbl.num_rows, 1)
-
-    def test_mongodb_schemaless_json_mode(self) -> None:
-        coll_name = self._prepare_collection("schemaless_json")
-        props = self.create_isolated_mongo_config(
-            collection_name=coll_name,
-            custom_props={
-                "converter.schemas.enable": "false",
-                "value.converter.schemas.enable": "false",
-                "key.converter.schemas.enable": "false",
-            },
+        read_rec = next(
+            r
+            for r in handler.records
+            if r.kind is EventKind.DATA
+            and r.value is not None
+            and r.value.get("op") == "r"
         )
-        handler = RecordingSchemaChangeHandler(
-            target_table=coll_name,
-            expected_count=2,
-        )
-        engine = DebeziumEngine(properties=props, handler=handler, format="json")
-        self.assertIsInstance(handler.converter, SchemalessJsonEventConverter)
-        assert handler.converter is not None
-        self.assertEqual(handler.converter.format, EventFormat.JSON)
-        self.assertFalse(handler.converter.schemas_enabled)
-
-        def _mutate_mongo() -> None:
-            handler.first_event_received.wait(timeout=15.0)
-            self.mongo_db.insert_json(
-                coll_name,
-                json.dumps({"_id": 303, "customer": "Schemaless User", "total": 10.0}),
-            )
-
-        threading.Thread(target=_mutate_mongo, daemon=True).start()
-        self.run_mongo_consumer(engine, handler)
-
-        self.assertEqual(len(handler.created_schemas), 1)
-        ops = [r.op for r in handler.records if r.kind is EventKind.DATA]
-        self.assertIn(ChangeOp.READ, ops)
-        self.assertIn(ChangeOp.INSERT, ops)
+        assert read_rec.value is not None
+        doc = json.loads(read_rec.value["after"])
+        self.assertEqual(doc["customer"], "Alice")
+        self.assertEqual(doc["shipping"]["city"], "Berlin")
 
         arrow_tbl = handler.table_batches[0].to_arrow()
         self.assertGreaterEqual(arrow_tbl.num_rows, 1)
@@ -269,7 +246,6 @@ class TestMongoDbSchemaIntegration(BaseMongoDbTest):
         """Verify snapshot of the pre-populated inventory.customers collection in quay.io/debezium/example-mongodb:3.4."""
         props = self.create_isolated_mongo_config(collection_name="customers")
         handler = RecordingSchemaChangeHandler(
-            properties=props,
             target_table="customers",
             expected_count=4,
         )
@@ -277,12 +253,18 @@ class TestMongoDbSchemaIntegration(BaseMongoDbTest):
         self.run_mongo_consumer(engine, handler)
 
         self.assertEqual(len(handler.created_schemas), 1)
-        read_records = [r for r in handler.records if r.op is ChangeOp.READ]
+        read_records = [
+            r
+            for r in handler.records
+            if r.kind is EventKind.DATA
+            and r.value is not None
+            and r.value.get("op") == "r"
+        ]
         self.assertEqual(len(read_records), 4)
         emails = {
             json.loads(r.value["after"])["email"]
             for r in read_records
-            if r.value is not None
+            if r.value is not None and r.value["after"] is not None
         }
         self.assertEqual(
             emails,

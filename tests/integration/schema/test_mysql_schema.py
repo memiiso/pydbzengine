@@ -14,23 +14,9 @@ import pytest
 
 from pydbzengine import DebeziumEngine, EventFormat
 from pydbzengine.schema import (
-    BinaryTypeHandler,
-    BooleanTypeHandler,
-    ChangeOp,
     ConnectEventConverter,
-    DateTypeHandler,
-    DecimalTypeHandler,
     EventKind,
-    FloatTypeHandler,
-    GeometryTypeHandler,
-    IntTypeHandler,
     JsonEventConverter,
-    PointTypeHandler,
-    SchemalessJsonEventConverter,
-    StringTypeHandler,
-    TemporalIntervalHandler,
-    TimestampTypeHandler,
-    TimeTypeHandler,
 )
 from tests.integration.schema.base import RecordingSchemaChangeHandler
 from tests.support import BaseMySqlTest
@@ -40,14 +26,13 @@ from tests.support import BaseMySqlTest
 class TestMySqlSchemaIntegration(BaseMySqlTest):
     """
     End-to-end MySQL CDC schema integration tests against a real MySQL database
-    and SchemaAwareChangeHandler consumer across all three converter modes:
+    and SchemaAwareChangeHandler consumer in both schema-enabled converter modes:
     1. JSON with schemas enabled (JsonEventConverter)
     2. Connect mode (ConnectEventConverter)
-    3. Schemaless JSON mode (SchemalessJsonEventConverter)
 
     Covers MySQL-specific data types (YEAR, SET, ENUM, TINYINT, MEDIUMINT, BIT(1),
-    BIT(16), DECIMAL, DATETIME, TIMESTAMP, POINT, GEOMETRY, JSON, BLOB/VARBINARY)
-    as well as MySQL DDL EventKind.SCHEMA_CHANGE events and live ALTER TABLE evolution.
+    BIT(16), DECIMAL, DATETIME, TIMESTAMP, POINT, GEOMETRY, JSON, BLOB/VARBINARY),
+    keyless tables, MySQL DDL EventKind.SCHEMA_CHANGE events, and live ALTER TABLE evolution.
     """
 
     TABLE_NAME = "test_mysql_all_types"
@@ -208,10 +193,10 @@ class TestMySqlSchemaIntegration(BaseMySqlTest):
         self.assertGreaterEqual(len(handler.schema_change_records), 1)
         self.assertEqual(handler.schema_change_records[0].kind, EventKind.SCHEMA_CHANGE)
 
-        # 2. Verify TableSchema & Handler Types for MySQL columns
+        # 2. Verify TableSchema & PyArrow Types for MySQL columns
         self.assertEqual(len(handler.created_schemas), 1)
         table_schema = handler.created_schemas[0]
-        self.assertEqual(table_schema.primary_keys, ("col_id",))
+        self.assertEqual(table_schema.key_fields, ("col_id",))
 
         after_struct = table_schema.arrow_schema.field("after").type
         self.assertTrue(pa.types.is_struct(after_struct))
@@ -246,32 +231,22 @@ class TestMySqlSchemaIntegration(BaseMySqlTest):
         self.assertTrue(pa.types.is_struct(after_struct.field("col_point").type))
         self.assertTrue(pa.types.is_struct(after_struct.field("col_geometry").type))
 
-        # Verify dedicated domain DataTypeHandler instances in value_handler
-        assert table_schema.value_handler is not None
-        after_handler = dict(
-            (f.name, f.handler) for f in table_schema.value_handler.fields
-        )["after"]
-        col_handlers = dict((f.name, f.handler) for f in after_handler.fields)
-        self.assertIsInstance(col_handlers["col_tinyint"], IntTypeHandler)
-        self.assertIsInstance(col_handlers["col_float"], FloatTypeHandler)
-        self.assertIsInstance(col_handlers["col_decimal"], DecimalTypeHandler)
-        self.assertIsInstance(col_handlers["col_bit1"], BooleanTypeHandler)
-        self.assertIsInstance(col_handlers["col_bit16"], BinaryTypeHandler)
-        self.assertIsInstance(col_handlers["col_year"], TemporalIntervalHandler)
-        self.assertIsInstance(col_handlers["col_date"], DateTypeHandler)
-        self.assertIsInstance(col_handlers["col_time"], TimeTypeHandler)
-        self.assertIsInstance(col_handlers["col_datetime_us"], TimestampTypeHandler)
-        self.assertIsInstance(col_handlers["col_enum"], StringTypeHandler)
-        self.assertIsInstance(col_handlers["col_set"], StringTypeHandler)
-        self.assertIsInstance(col_handlers["col_point"], PointTypeHandler)
-        self.assertIsInstance(col_handlers["col_geometry"], GeometryTypeHandler)
+        # Verify Debezium logical_type metadata preserved on pass-through logical types
+        for col_name, expected_logical in (
+            ("col_year", b"io.debezium.time.Year"),
+            ("col_enum", b"io.debezium.data.Enum"),
+            ("col_set", b"io.debezium.data.EnumSet"),
+        ):
+            meta = after_struct.field(col_name).metadata
+            assert meta is not None
+            self.assertEqual(meta[b"debezium.logical_type"], expected_logical)
 
         # 3. Verify Coerced Values and Materialized Arrow Table
         record = handler.records[0]
         self.assertEqual(record.kind, EventKind.DATA)
-        self.assertEqual(record.op, ChangeOp.READ)
-        row = record.data
-        assert row is not None
+        assert record.value is not None
+        self.assertEqual(record.value["op"], "r")
+        row = record.value["after"]
         self.assertEqual(row["col_tinyint"], 127)
         self.assertEqual(row["col_smallint"], 32767)
         self.assertEqual(row["col_mediumint"], 8388607)
@@ -295,16 +270,16 @@ class TestMySqlSchemaIntegration(BaseMySqlTest):
         self.assertEqual(row["col_point"]["y"], 2.5)
         self.assertIsInstance(row["col_geometry"]["wkb"], bytes)
 
-        unpacked_arrow = handler.table_batches[0].to_arrow(extract_rows=True)
-        self.assertEqual(unpacked_arrow.num_rows, 1)
-        arrow_row = unpacked_arrow.to_pylist()[0]
+        arrow_tbl = handler.table_batches[0].to_arrow()
+        self.assertEqual(arrow_tbl.num_rows, 1)
+        arrow_row = arrow_tbl.to_pylist()[0]["after"]
         self.assertEqual(arrow_row["col_date"], datetime.date(2024, 3, 15))
         self.assertEqual(arrow_row["col_year"], 2024)
 
     def test_mysql_connect_all_types_and_live_schema_evolution(self) -> None:
         """
         Verifies ConnectEventConverter and SchemaAwareChangeHandler on MySQL across
-        all MySQL types, followed by live UPDATE, ALTER TABLE ADD COLUMN, INSERT, and DELETE.
+        MySQL types, followed by live UPDATE, ALTER TABLE ADD COLUMN, INSERT, and DELETE.
         """
         table_name = "test_mysql_connect_crud"
         self.execute_on_source_db(
@@ -326,10 +301,7 @@ class TestMySqlSchemaIntegration(BaseMySqlTest):
             self.execute_on_source_db, f"DROP TABLE IF EXISTS inventory.{table_name};"
         )
 
-        props = self.create_isolated_mysql_config(
-            table_name=table_name,
-            custom_props={"format": "connect"},
-        )
+        props = self.create_isolated_mysql_config(table_name=table_name)
         # 1 READ + 1 UPDATE + 1 INSERT (after ALTER TABLE) + 1 DELETE + 1 TOMBSTONE = 5 records
         handler = RecordingSchemaChangeHandler(
             target_table=table_name,
@@ -357,92 +329,116 @@ class TestMySqlSchemaIntegration(BaseMySqlTest):
         self.run_mysql_consumer(engine, handler, timeout_sec=35.0)
 
         self.assertEqual(len(handler.created_schemas), 1)
+        self.assertEqual(handler.created_schemas[0].key_fields, ("id",))
         self.assertGreaterEqual(len(handler.evolutions), 1)
         new_schema, old_schema, diff = handler.evolutions[-1]
-        self.assertIn("category", [f.name for f in diff.added_fields])
         self.assertTrue(diff.is_additive)
         self.assertTrue(diff.is_compatible)
-        self.assertNotIn("category", old_schema.row_schema.names)
-        self.assertIn("category", new_schema.row_schema.names)
+        self.assertFalse(diff.key_fields_changed)
+        self.assertFalse(diff.key_schema_changed)
+        self.assertEqual(diff.removed_fields, ())
+        self.assertEqual(diff.added_fields, ())
+        old_after = old_schema.arrow_schema.field("after").type
+        new_after = new_schema.arrow_schema.field("after").type
+        self.assertTrue(pa.types.is_struct(old_after))
+        self.assertTrue(pa.types.is_struct(new_after))
+        self.assertNotIn("category", [f.name for f in old_after])
+        self.assertIn("category", [f.name for f in new_after])
 
-        ops = [r.op for r in handler.records if r.kind is EventKind.DATA]
-        self.assertIn(ChangeOp.READ, ops)
-        self.assertIn(ChangeOp.UPDATE, ops)
-        self.assertIn(ChangeOp.INSERT, ops)
-        self.assertIn(ChangeOp.DELETE, ops)
+        ops = [
+            r.value["op"]
+            for r in handler.records
+            if r.kind is EventKind.DATA and r.value is not None
+        ]
+        self.assertIn("r", ops)
+        self.assertIn("u", ops)
+        self.assertIn("c", ops)
+        self.assertIn("d", ops)
+
+        insert_rec = next(
+            r
+            for r in handler.records
+            if r.kind is EventKind.DATA
+            and r.value is not None
+            and r.value.get("op") == "c"
+        )
+        assert insert_rec.value is not None
+        self.assertEqual(insert_rec.value["after"]["name"], "item_2")
+        self.assertEqual(insert_rec.value["after"]["category"], "books")
 
         tombstones = [r for r in handler.records if r.kind is EventKind.TOMBSTONE]
         self.assertGreaterEqual(len(tombstones), 1)
+        self.assertIsNone(tombstones[0].value)
         self.assertEqual(tombstones[0].key, {"id": 1})
 
-    def test_mysql_schemaless_json_crud_and_schema_evolution(self) -> None:
-        """
-        Verifies SchemalessJsonEventConverter and SchemaAwareChangeHandler on MySQL
-        with converter.schemas.enable = false and live ALTER TABLE schema evolution.
-        """
-        table_name = "test_mysql_schemaless_crud"
+        self.assertGreaterEqual(len(handler.table_batches), 2)
+        self.assertTrue(
+            any(
+                "category" in [f.name for f in t.schema.field("after").type]
+                for t in handler.arrow_tables
+            )
+        )
+        aligned_initial = handler.table_batches[0].to_arrow(
+            target_schema=new_schema.arrow_schema
+        )
+        self.assertEqual(aligned_initial.schema, new_schema.arrow_schema)
+        self.assertIsNone(aligned_initial.to_pylist()[0]["after"]["category"])
+
+    def _run_mysql_keyless_table_test(
+        self,
+        *,
+        fmt: str,
+        expected_converter: type[ConnectEventConverter | JsonEventConverter],
+    ) -> None:
+        table_name = f"test_mysql_keyless_{fmt}"
         self.execute_on_source_db(
             f"""
             DROP TABLE IF EXISTS inventory.{table_name};
             CREATE TABLE inventory.{table_name} (
-                id INT AUTO_INCREMENT PRIMARY KEY,
-                label VARCHAR(100) NOT NULL,
-                year_val YEAR
+                label VARCHAR(50) NOT NULL,
+                score INT
             );
-            INSERT INTO inventory.{table_name} (label, year_val) VALUES ('first', 2023);
+            INSERT INTO inventory.{table_name} (label, score) VALUES ('no_pk_{fmt}', 77);
             """
         )
         self.addCleanup(
             self.execute_on_source_db, f"DROP TABLE IF EXISTS inventory.{table_name};"
         )
 
-        props = self.create_isolated_mysql_config(
-            table_name=table_name,
-            custom_props={
-                "include.schema.changes": "false",
-                "converter.schemas.enable": "false",
-                "value.converter.schemas.enable": "false",
-                "key.converter.schemas.enable": "false",
-            },
-        )
+        props = self.create_isolated_mysql_config(table_name=table_name)
         handler = RecordingSchemaChangeHandler(
             target_table=table_name,
-            expected_count=3,
+            expected_count=1,
         )
-        engine = DebeziumEngine(properties=props, handler=handler, format="json")
-        self.assertIsInstance(handler.converter, SchemalessJsonEventConverter)
-        assert handler.converter is not None
-        self.assertEqual(handler.converter.format, EventFormat.JSON)
-        self.assertFalse(handler.converter.schemas_enabled)
-
-        def _mutate_mysql() -> None:
-            handler.first_event_received.wait(timeout=15.0)
-            self.execute_on_source_db(
-                f"""
-                ALTER TABLE inventory.{table_name} ADD COLUMN score INT;
-                INSERT INTO inventory.{table_name} (label, year_val, score) VALUES ('second', 2024, 100);
-                DELETE FROM inventory.{table_name} WHERE id = 1;
-                """
-            )
-
-        threading.Thread(target=_mutate_mysql, daemon=True).start()
+        engine = DebeziumEngine(properties=props, handler=handler, format=fmt)
+        self.assertIsInstance(handler.converter, expected_converter)
         self.run_mysql_consumer(engine, handler, timeout_sec=35.0)
 
         self.assertEqual(len(handler.created_schemas), 1)
-        self.assertGreaterEqual(len(handler.evolutions), 1)
-        _, _, diff = handler.evolutions[-1]
-        self.assertIn("score", [f.name for f in diff.added_fields])
+        table_schema = handler.created_schemas[0]
+        self.assertEqual(table_schema.key_fields, ())
+        self.assertIsNone(table_schema.key_schema)
+        rec = handler.records[0]
+        self.assertIsNone(rec.key)
+        assert rec.value is not None
+        self.assertEqual(rec.value["after"]["label"], f"no_pk_{fmt}")
+        self.assertEqual(rec.value["after"]["score"], 77)
+        self.assertEqual(handler.table_batches[0].to_arrow().num_rows, 1)
 
-        unpacked_tables = [
-            tb.to_arrow(extract_rows=True) for tb in handler.table_batches
-        ]
-        self.assertTrue(any("score" in t.schema.names for t in unpacked_tables))
+    def test_mysql_connect_keyless_table_empty_key_schema(self) -> None:
+        self._run_mysql_keyless_table_test(
+            fmt="connect", expected_converter=ConnectEventConverter
+        )
+
+    def test_mysql_json_keyless_table_empty_key_schema(self) -> None:
+        self._run_mysql_keyless_table_test(
+            fmt="json", expected_converter=JsonEventConverter
+        )
 
     def test_mysql_example_inventory_customers_snapshot(self) -> None:
         """Verify snapshot of the pre-populated inventory.customers table in debezium/example-mysql."""
         props = self.create_isolated_mysql_config(table_name="customers")
         handler = RecordingSchemaChangeHandler(
-            properties=props,
             target_table="customers",
             expected_count=4,
         )
@@ -450,9 +446,19 @@ class TestMySqlSchemaIntegration(BaseMySqlTest):
         self.run_mysql_consumer(engine, handler, timeout_sec=35.0)
 
         self.assertEqual(len(handler.created_schemas), 1)
-        read_records = [r for r in handler.records if r.op is ChangeOp.READ]
+        read_records = [
+            r
+            for r in handler.records
+            if r.kind is EventKind.DATA
+            and r.value is not None
+            and r.value.get("op") == "r"
+        ]
         self.assertEqual(len(read_records), 4)
-        emails = {r.after["email"] for r in read_records if r.after is not None}
+        emails = {
+            r.value["after"]["email"]
+            for r in read_records
+            if r.value is not None and r.value["after"] is not None
+        }
         self.assertEqual(
             emails,
             {
@@ -462,7 +468,8 @@ class TestMySqlSchemaIntegration(BaseMySqlTest):
                 "annek@noanswer.org",
             },
         )
-        arrow_tbl = handler.table_batches[0].to_arrow(extract_rows=True)
+        arrow_tbl = handler.table_batches[0].to_arrow()
+        after_struct = arrow_tbl.schema.field("after").type
         self.assertEqual(
-            arrow_tbl.schema.names, ["id", "first_name", "last_name", "email"]
+            [f.name for f in after_struct], ["id", "first_name", "last_name", "email"]
         )

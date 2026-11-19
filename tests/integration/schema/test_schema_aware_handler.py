@@ -7,11 +7,9 @@ import pytest
 
 from pydbzengine import DebeziumEngine, EventFormat
 from pydbzengine.schema import (
-    ChangeOp,
     ConnectEventConverter,
     EventKind,
     JsonEventConverter,
-    SchemalessJsonEventConverter,
 )
 from tests.integration.schema.base import (
     BaseSchemaIntegrationTest,
@@ -23,10 +21,9 @@ from tests.integration.schema.base import (
 class TestSchemaAwareChangeHandlerIntegration(BaseSchemaIntegrationTest):
     """
     End-to-end integration tests for SchemaAwareChangeHandler consuming live
-    PostgreSQL CDC events across all three converter modes:
+    PostgreSQL CDC events in both schema-enabled converter modes:
     1. JSON with schemas enabled (JsonEventConverter)
     2. Connect mode (ConnectEventConverter)
-    3. Schemaless JSON mode (SchemalessJsonEventConverter)
     """
 
     def _create_isolated_crud_table(self, suffix: str) -> str:
@@ -82,44 +79,69 @@ class TestSchemaAwareChangeHandlerIntegration(BaseSchemaIntegrationTest):
         threading.Thread(target=_mutate_db, daemon=True).start()
         records = self.run_engine_with_consumer(engine, handler, timeout_sec=35.0)
 
-        # 1. Verify Table Creation and Schema Evolution Hooks
+        # 1. Verify Table Creation and Struct-Aware Schema Evolution Hooks
         self.assertEqual(len(handler.created_schemas), 1)
-        self.assertEqual(handler.created_schemas[0].primary_keys, ("id",))
+        self.assertEqual(handler.created_schemas[0].key_fields, ("id",))
         self.assertGreaterEqual(len(handler.evolutions), 1)
         new_schema, old_schema, diff = handler.evolutions[-1]
-        self.assertIn("extra_flag", [f.name for f in diff.added_fields])
         self.assertTrue(diff.is_additive)
         self.assertTrue(diff.is_compatible)
-        self.assertNotIn("extra_flag", old_schema.row_schema.names)
-        self.assertIn("extra_flag", new_schema.row_schema.names)
+        self.assertFalse(diff.key_fields_changed)
+        self.assertFalse(diff.key_schema_changed)
+        self.assertEqual(diff.removed_fields, ())
+        self.assertEqual(diff.added_fields, ())
+        old_after = old_schema.arrow_schema.field("after").type
+        new_after = new_schema.arrow_schema.field("after").type
+        self.assertTrue(pa.types.is_struct(old_after))
+        self.assertTrue(pa.types.is_struct(new_after))
+        self.assertNotIn("extra_flag", [f.name for f in old_after])
+        self.assertIn("extra_flag", [f.name for f in new_after])
 
         # 2. Verify Operations and Tombstone in Arrival Order
-        ops = [r.op for r in records if r.kind is EventKind.DATA]
-        self.assertIn(ChangeOp.READ, ops)
-        self.assertIn(ChangeOp.UPDATE, ops)
-        self.assertIn(ChangeOp.INSERT, ops)
-        self.assertIn(ChangeOp.DELETE, ops)
+        ops = [
+            r.value["op"]
+            for r in records
+            if r.kind is EventKind.DATA and r.value is not None
+        ]
+        self.assertIn("r", ops)
+        self.assertIn("u", ops)
+        self.assertIn("c", ops)
+        self.assertIn("d", ops)
+
+        insert_rec = next(
+            r
+            for r in records
+            if r.kind is EventKind.DATA
+            and r.value is not None
+            and r.value.get("op") == "c"
+        )
+        assert insert_rec.value is not None
+        self.assertEqual(insert_rec.value["after"]["title"], "evolved_row")
+        self.assertIs(insert_rec.value["after"]["extra_flag"], True)
 
         tombstones = [r for r in records if r.kind is EventKind.TOMBSTONE]
         self.assertGreaterEqual(len(tombstones), 1)
-        self.assertIsNone(tombstones[0].row)
-        self.assertIsNone(tombstones[0].op)
+        self.assertIsNone(tombstones[0].value)
         self.assertEqual(tombstones[0].key, {"id": 1})
 
-        # 3. Verify Materialized Arrow Tables from TableBatches
+        # 3. Verify Materialized Arrow Tables and Struct-Evolution Alignment
         self.assertGreaterEqual(len(handler.table_batches), 2)
-        unpacked_tables = [
-            tb.to_arrow(extract_rows=True) for tb in handler.table_batches
-        ]
-        self.assertTrue(any("extra_flag" in t.schema.names for t in unpacked_tables))
+        self.assertTrue(
+            any(
+                "extra_flag" in [f.name for f in t.schema.field("after").type]
+                for t in handler.arrow_tables
+            )
+        )
+        aligned_initial = handler.table_batches[0].to_arrow(
+            target_schema=new_schema.arrow_schema
+        )
+        self.assertEqual(aligned_initial.schema, new_schema.arrow_schema)
+        self.assertIsNone(aligned_initial.to_pylist()[0]["after"]["extra_flag"])
 
     def test_consumer_connect_mode_crud_and_schema_evolution(self) -> None:
         table_name = self._create_isolated_crud_table("connect_mode")
         props, _ = self.create_isolated_connector_config(
-            custom_props={
-                "table.include.list": f"public.{table_name}",
-                "format": "connect",
-            }
+            custom_props={"table.include.list": f"public.{table_name}"}
         )
         handler = RecordingSchemaChangeHandler(
             target_table=table_name,
@@ -147,72 +169,57 @@ class TestSchemaAwareChangeHandlerIntegration(BaseSchemaIntegrationTest):
         records = self.run_engine_with_consumer(engine, handler, timeout_sec=35.0)
 
         self.assertEqual(len(handler.created_schemas), 1)
+        self.assertEqual(handler.created_schemas[0].key_fields, ("id",))
         self.assertGreaterEqual(len(handler.evolutions), 1)
-        _, _, diff = handler.evolutions[-1]
-        self.assertIn("extra_note", [f.name for f in diff.added_fields])
+        new_schema, old_schema, diff = handler.evolutions[-1]
         self.assertTrue(diff.is_additive)
+        self.assertTrue(diff.is_compatible)
+        self.assertFalse(diff.key_fields_changed)
+        self.assertFalse(diff.key_schema_changed)
+        self.assertEqual(diff.removed_fields, ())
+        self.assertEqual(diff.added_fields, ())
+        old_after = old_schema.arrow_schema.field("after").type
+        new_after = new_schema.arrow_schema.field("after").type
+        self.assertTrue(pa.types.is_struct(old_after))
+        self.assertTrue(pa.types.is_struct(new_after))
+        self.assertNotIn("extra_note", [f.name for f in old_after])
+        self.assertIn("extra_note", [f.name for f in new_after])
 
-        ops = [r.op for r in records if r.kind is EventKind.DATA]
-        self.assertIn(ChangeOp.READ, ops)
-        self.assertIn(ChangeOp.UPDATE, ops)
-        self.assertIn(ChangeOp.INSERT, ops)
-        self.assertIn(ChangeOp.DELETE, ops)
+        ops = [
+            r.value["op"]
+            for r in records
+            if r.kind is EventKind.DATA and r.value is not None
+        ]
+        self.assertIn("r", ops)
+        self.assertIn("u", ops)
+        self.assertIn("c", ops)
+        self.assertIn("d", ops)
+
+        insert_rec = next(
+            r
+            for r in records
+            if r.kind is EventKind.DATA
+            and r.value is not None
+            and r.value.get("op") == "c"
+        )
+        assert insert_rec.value is not None
+        self.assertEqual(insert_rec.value["after"]["title"], "connect_inserted")
+        self.assertEqual(insert_rec.value["after"]["extra_note"], "note1")
 
         tombstones = [r for r in records if r.kind is EventKind.TOMBSTONE]
         self.assertGreaterEqual(len(tombstones), 1)
+        self.assertIsNone(tombstones[0].value)
         self.assertEqual(tombstones[0].key, {"id": 1})
 
-    def test_consumer_schemaless_json_crud_and_schema_evolution(self) -> None:
-        table_name = self._create_isolated_crud_table("schemaless_json")
-        props, _ = self.create_isolated_connector_config(
-            custom_props={
-                "table.include.list": f"public.{table_name}",
-                "converter.schemas.enable": "false",
-                "value.converter.schemas.enable": "false",
-                "key.converter.schemas.enable": "false",
-            }
-        )
-        handler = RecordingSchemaChangeHandler(
-            target_table=table_name,
-            expected_count=4,
-        )
-        engine = DebeziumEngine(properties=props, handler=handler, format="json")
-        self.assertIsInstance(handler.converter, SchemalessJsonEventConverter)
-        assert handler.converter is not None
-        self.assertEqual(handler.converter.format, EventFormat.JSON)
-        self.assertFalse(handler.converter.schemas_enabled)
-
-        def _mutate_db() -> None:
-            handler.first_event_received.wait(timeout=15.0)
-            self.execute_on_source_db(
-                f"""
-                ALTER TABLE public.{table_name} ADD COLUMN dynamic_col INTEGER;
-                INSERT INTO public.{table_name} (title, amount, tags, coords, embedding, dynamic_col)
-                VALUES ('schemaless_row', 75.25, ARRAY['omega'], POINT(7.0, 8.0), '[0.1, 0.2, 0.3]', 42);
-                DELETE FROM public.{table_name} WHERE id = 1;
-                """
-            )
-
-        threading.Thread(target=_mutate_db, daemon=True).start()
-        records = self.run_engine_with_consumer(engine, handler, timeout_sec=35.0)
-
-        self.assertEqual(len(handler.created_schemas), 1)
-        self.assertGreaterEqual(len(handler.evolutions), 1)
-        _, _, diff = handler.evolutions[-1]
-        self.assertIn("dynamic_col", [f.name for f in diff.added_fields])
-
-        ops = [r.op for r in records if r.kind is EventKind.DATA]
-        self.assertIn(ChangeOp.READ, ops)
-        self.assertIn(ChangeOp.INSERT, ops)
-        self.assertIn(ChangeOp.DELETE, ops)
-
-        unpacked_tables = [
-            tb.to_arrow(extract_rows=True) for tb in handler.table_batches
-        ]
+        self.assertGreaterEqual(len(handler.table_batches), 2)
         self.assertTrue(
             any(
-                "dynamic_col" in t.schema.names
-                and pa.types.is_integer(t.schema.field("dynamic_col").type)
-                for t in unpacked_tables
+                "extra_note" in [f.name for f in t.schema.field("after").type]
+                for t in handler.arrow_tables
             )
         )
+        aligned_initial = handler.table_batches[0].to_arrow(
+            target_schema=new_schema.arrow_schema
+        )
+        self.assertEqual(aligned_initial.schema, new_schema.arrow_schema)
+        self.assertIsNone(aligned_initial.to_pylist()[0]["after"]["extra_note"])

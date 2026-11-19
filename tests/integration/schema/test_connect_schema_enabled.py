@@ -37,12 +37,12 @@ class TestConnectSchemaEnabled(BaseSchemaIntegrationTest):
         record = batch.records[0]
         self.assertIsInstance(record, ChangeRecord)
         assert isinstance(record, ChangeRecord)
-        table_schema, envelope_row = record.schema, record.row
+        table_schema, envelope_row = record.schema, record.value
         assert table_schema is not None
         assert envelope_row is not None
 
-        # 1. Primary Key
-        self.assertEqual(table_schema.primary_keys, ("col_id",))
+        # 1. Key Fields
+        self.assertEqual(table_schema.key_fields, ("col_id",))
 
         # 2. Envelope & Nested 'after' PyArrow Field Assertions
         envelope_schema = table_schema.arrow_schema
@@ -89,10 +89,12 @@ class TestConnectSchemaEnabled(BaseSchemaIntegrationTest):
         self.assertTrue(pa.types.is_struct(after_struct.field("col_geometry").type))
         self.assertTrue(pa.types.is_struct(after_struct.field("col_geography").type))
         self.assertEqual(
-            after_struct.field("col_float_vector").type, pa.list_(pa.float64())
+            after_struct.field("col_float_vector").type,
+            pa.list_(pa.field("item", pa.float64(), nullable=False)),
         )
         self.assertEqual(
-            after_struct.field("col_half_vector").type, pa.list_(pa.float32())
+            after_struct.field("col_half_vector").type,
+            pa.list_(pa.field("item", pa.float32(), nullable=False)),
         )
         self.assertTrue(
             pa.types.is_struct(after_struct.field("col_sparse_vector").type)
@@ -172,3 +174,39 @@ class TestConnectSchemaEnabled(BaseSchemaIntegrationTest):
 
         tbl = tb.to_arrow()
         self.assertEqual(tbl.num_rows, 2)
+
+    def test_connect_keyless_table_empty_key_schema(self) -> None:
+        """Verifies ConnectEventConverter normalizes keyless tables (empty/null keySchema) cleanly."""
+        table_name = "test_connect_keyless"
+        self.execute_on_source_db(
+            f"""
+            DROP TABLE IF EXISTS public.{table_name};
+            CREATE TABLE public.{table_name} (
+                label VARCHAR(50) NOT NULL,
+                score INTEGER
+            );
+            INSERT INTO public.{table_name} (label, score) VALUES ('no_pk_connect', 42);
+            """
+        )
+        self.addCleanup(
+            self.execute_on_source_db, f"DROP TABLE IF EXISTS public.{table_name};"
+        )
+
+        props, _ = self.create_isolated_connector_config(
+            custom_props={"table.include.list": f"public.{table_name}"}
+        )
+        handler = CollectingHandler(target_table=table_name, expected_count=1)
+        engine = DebeziumEngine(properties=props, handler=handler, format="connect")
+
+        records = self.run_engine_and_collect(engine, handler, timeout_sec=30.0)
+        batch = ConnectEventConverter().convert(records)
+        self.assertEqual(len(batch.records), 1)
+        rec = batch.records[0]
+        assert rec.schema is not None
+        assert rec.value is not None
+        self.assertEqual(rec.schema.key_fields, ())
+        self.assertIsNone(rec.schema.key_schema)
+        self.assertIsNone(rec.key)
+        self.assertEqual(rec.value["after"]["label"], "no_pk_connect")
+        self.assertEqual(rec.value["after"]["score"], 42)
+        self.assertEqual(batch.table_batches()[0].to_arrow().num_rows, 1)

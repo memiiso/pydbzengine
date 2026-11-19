@@ -38,7 +38,7 @@ class TestSourceConfigs(BaseSchemaIntegrationTest):
         self.assertEqual(len(batch_map.records), 1)
         rec_map = batch_map.records[0]
         assert isinstance(rec_map, ChangeRecord)
-        table_schema, env_row = rec_map.schema, rec_map.row
+        table_schema, env_row = rec_map.schema, rec_map.value
         assert table_schema is not None
         assert env_row is not None
 
@@ -62,7 +62,7 @@ class TestSourceConfigs(BaseSchemaIntegrationTest):
         self.assertEqual(len(batch_json.records), 1)
         rec_json = batch_json.records[0]
         assert isinstance(rec_json, ChangeRecord)
-        table_schema_json, env_row_json = rec_json.schema, rec_json.row
+        table_schema_json, env_row_json = rec_json.schema, rec_json.value
         assert table_schema_json is not None
         assert env_row_json is not None
 
@@ -87,7 +87,7 @@ class TestSourceConfigs(BaseSchemaIntegrationTest):
         self.assertEqual(len(batch_num.records), 1)
         rec_num = batch_num.records[0]
         assert isinstance(rec_num, ChangeRecord)
-        table_schema, env_row = rec_num.schema, rec_num.row
+        table_schema, env_row = rec_num.schema, rec_num.value
         assert table_schema is not None
         assert env_row is not None
 
@@ -111,7 +111,7 @@ class TestSourceConfigs(BaseSchemaIntegrationTest):
         self.assertEqual(len(batch_str.records), 1)
         rec_str = batch_str.records[0]
         assert isinstance(rec_str, ChangeRecord)
-        table_schema_str, env_row_str = rec_str.schema, rec_str.row
+        table_schema_str, env_row_str = rec_str.schema, rec_str.value
         assert table_schema_str is not None
         assert env_row_str is not None
 
@@ -133,7 +133,7 @@ class TestSourceConfigs(BaseSchemaIntegrationTest):
         self.assertEqual(len(batch.records), 1)
         rec = batch.records[0]
         assert isinstance(rec, ChangeRecord)
-        table_schema, row = rec.schema, rec.row
+        table_schema, row = rec.schema, rec.value
         assert table_schema is not None
         assert row is not None
 

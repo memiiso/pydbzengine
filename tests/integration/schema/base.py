@@ -16,6 +16,7 @@ from pydbzengine import (
 from pydbzengine.schema import (
     ChangeBatch,
     ChangeRecord,
+    EventKind,
     SchemaAwareChangeHandler,
     SchemaDiff,
     TableBatch,
@@ -77,7 +78,7 @@ class RecordingSchemaChangeHandler(SchemaAwareChangeHandler):
     def handle_change_batch(self, batch: ChangeBatch) -> None:
         super().handle_change_batch(batch)
         for record in batch.records:
-            if record.kind.value == "schema_change":
+            if record.kind is EventKind.SCHEMA_CHANGE:
                 self.schema_change_records.append(record)
             if self.target_table in record.destination:
                 self.records.append(record)
