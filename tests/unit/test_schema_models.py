@@ -967,6 +967,139 @@ class TestSchemaModels(unittest.TestCase):
             ],
         )
 
+    def test_table_batch_to_arrow_evolves_nested_structs_on_target_schema(
+        self,
+    ) -> None:
+        v1_row = [
+            pa.field("id", pa.int32(), nullable=False),
+            pa.field("name", pa.string(), nullable=True),
+            pa.field("legacy", pa.string(), nullable=True),
+        ]
+        v2_row = [
+            pa.field("name", pa.string(), nullable=True),
+            pa.field("id", pa.int64(), nullable=False),
+            pa.field("email", pa.string(), nullable=True),
+        ]
+        source_pa = pa.schema(
+            [
+                pa.field("before", pa.struct(v1_row), nullable=True),
+                pa.field("after", pa.struct(v1_row), nullable=True),
+                pa.field("op", pa.string(), nullable=False),
+            ]
+        )
+        target_pa = pa.schema(
+            [
+                pa.field("before", pa.struct(v2_row), nullable=True),
+                pa.field("after", pa.struct(v2_row), nullable=True),
+                pa.field("op", pa.string(), nullable=False),
+            ]
+        )
+        schema = TableSchema(
+            destination="inventory.customers",
+            arrow_schema=source_pa,
+            key_fields=("id",),
+        )
+        rec_insert = ChangeRecord(
+            destination="inventory.customers",
+            schema=schema,
+            value={
+                "before": None,
+                "after": {"id": 1, "name": "Alice", "legacy": "x"},
+                "op": "c",
+            },
+            key={"id": 1},
+        )
+        rec_delete = ChangeRecord(
+            destination="inventory.customers",
+            schema=schema,
+            value={
+                "before": {"id": 2, "name": "Bob", "legacy": "y"},
+                "after": None,
+                "op": "d",
+            },
+            key={"id": 2},
+        )
+
+        aligned = TableBatch(schema=schema, records=(rec_insert, rec_delete)).to_arrow(
+            target_schema=target_pa
+        )
+        self.assertEqual(aligned.schema, target_pa)
+        self.assertEqual(
+            aligned.to_pylist(),
+            [
+                {
+                    "before": None,
+                    "after": {"name": "Alice", "id": 1, "email": None},
+                    "op": "c",
+                },
+                {
+                    "before": {"name": "Bob", "id": 2, "email": None},
+                    "after": None,
+                    "op": "d",
+                },
+            ],
+        )
+
+        # Adding a missing non-nullable subfield to a struct fails fast in PyArrow cast
+        target_req_sub = pa.schema(
+            [
+                pa.field(
+                    "after",
+                    pa.struct(
+                        [
+                            pa.field("id", pa.int32(), nullable=False),
+                            pa.field("required_flag", pa.bool_(), nullable=False),
+                        ]
+                    ),
+                    nullable=True,
+                ),
+            ]
+        )
+        with self.assertRaises(pa.ArrowTypeError):
+            TableBatch(schema=schema, records=(rec_insert,)).to_arrow(
+                target_schema=target_req_sub
+            )
+
+        # Tightening an existing nullable subfield fails on null subfield values,
+        # while permitting rows where the parent struct itself is None
+        target_tight_sub = pa.schema(
+            [
+                pa.field(
+                    "after",
+                    pa.struct(
+                        [
+                            pa.field("id", pa.int32(), nullable=False),
+                            pa.field("name", pa.string(), nullable=False),
+                        ]
+                    ),
+                    nullable=True,
+                ),
+            ]
+        )
+        rec_null_name = ChangeRecord(
+            destination="inventory.customers",
+            schema=schema,
+            value={
+                "before": None,
+                "after": {"id": 3, "name": None, "legacy": None},
+                "op": "c",
+            },
+            key={"id": 3},
+        )
+        with self.assertRaises(pa.ArrowInvalid):
+            TableBatch(schema=schema, records=(rec_null_name,)).to_arrow(
+                target_schema=target_tight_sub
+            )
+
+        aligned_null_parent = TableBatch(
+            schema=schema, records=(rec_delete, rec_insert)
+        ).to_arrow(target_schema=target_tight_sub)
+        self.assertEqual(aligned_null_parent.schema, target_tight_sub)
+        self.assertEqual(
+            aligned_null_parent.to_pylist(),
+            [{"after": None}, {"after": {"id": 1, "name": "Alice"}}],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
