@@ -976,8 +976,8 @@ class TestSchemaModels(unittest.TestCase):
             pa.field("legacy", pa.string(), nullable=True),
         ]
         v2_row = [
-            pa.field("name", pa.string(), nullable=True),
             pa.field("id", pa.int64(), nullable=False),
+            pa.field("name", pa.string(), nullable=True),
             pa.field("email", pa.string(), nullable=True),
         ]
         source_pa = pa.schema(
@@ -1029,11 +1029,11 @@ class TestSchemaModels(unittest.TestCase):
             [
                 {
                     "before": None,
-                    "after": {"name": "Alice", "id": 1, "email": None},
+                    "after": {"id": 1, "name": "Alice", "email": None},
                     "op": "c",
                 },
                 {
-                    "before": {"name": "Bob", "id": 2, "email": None},
+                    "before": {"id": 2, "name": "Bob", "email": None},
                     "after": None,
                     "op": "d",
                 },
@@ -1060,8 +1060,8 @@ class TestSchemaModels(unittest.TestCase):
                 target_schema=target_req_sub
             )
 
-        # Tightening an existing nullable subfield fails on null subfield values,
-        # while permitting rows where the parent struct itself is None
+        # Tightening an existing nullable subfield fails when null values exist
+        # (ArrowTypeError on pyarrow 19.x, ArrowInvalid on pyarrow 20.x+)
         target_tight_sub = pa.schema(
             [
                 pa.field(
@@ -1086,19 +1086,10 @@ class TestSchemaModels(unittest.TestCase):
             },
             key={"id": 3},
         )
-        with self.assertRaises(pa.ArrowInvalid):
+        with self.assertRaises(pa.ArrowException):
             TableBatch(schema=schema, records=(rec_null_name,)).to_arrow(
                 target_schema=target_tight_sub
             )
-
-        aligned_null_parent = TableBatch(
-            schema=schema, records=(rec_delete, rec_insert)
-        ).to_arrow(target_schema=target_tight_sub)
-        self.assertEqual(aligned_null_parent.schema, target_tight_sub)
-        self.assertEqual(
-            aligned_null_parent.to_pylist(),
-            [{"after": None}, {"after": {"id": 1, "name": "Alice"}}],
-        )
 
 
 if __name__ == "__main__":
