@@ -46,6 +46,100 @@ def _has_lossy_promotion(old_t: pa.DataType, new_t: pa.DataType) -> bool:
     return False
 
 
+def _has_non_nullable_addition(old_t: pa.DataType, new_t: pa.DataType) -> bool:
+    if pa.types.is_struct(old_t) and pa.types.is_struct(new_t):
+        old_map = {f.name: f for f in old_t}
+        for new_f in new_t:
+            old_f = old_map.get(new_f.name)
+            if old_f is None:
+                if not new_f.nullable:
+                    return True
+            elif _has_non_nullable_addition(old_f.type, new_f.type):
+                return True
+        return False
+    if pa.types.is_list(old_t) and pa.types.is_list(new_t):
+        return _has_non_nullable_addition(old_t.value_type, new_t.value_type)
+    if pa.types.is_map(old_t) and pa.types.is_map(new_t):
+        return _has_non_nullable_addition(
+            old_t.key_type, new_t.key_type
+        ) or _has_non_nullable_addition(old_t.item_type, new_t.item_type)
+    return False
+
+
+def _is_additive_struct_change(old_f: pa.Field, new_f: pa.Field) -> bool:
+    if old_f.nullable != new_f.nullable:
+        return False
+    if not (pa.types.is_struct(old_f.type) and pa.types.is_struct(new_f.type)):
+        return False
+    old_fields = list(old_f.type)
+    new_fields = list(new_f.type)
+    old_map = {f.name: f for f in old_fields}
+    new_map = {f.name: f for f in new_fields}
+    if any(name not in new_map for name in old_map):
+        return False
+    if [f.name for f in old_fields] != [
+        f.name for f in new_fields if f.name in old_map
+    ]:
+        return False
+    found_addition = False
+    for new_sub in new_fields:
+        old_sub = old_map.get(new_sub.name)
+        if old_sub is None:
+            if not new_sub.nullable:
+                return False
+            found_addition = True
+        elif old_sub.type != new_sub.type or old_sub.nullable != new_sub.nullable:
+            if not _is_additive_struct_change(old_sub, new_sub):
+                return False
+            found_addition = True
+    return found_addition
+
+
+def _validate_arrow_nullability(
+    col: pa.Array | pa.ChunkedArray,
+    field: pa.Field,
+    path: str,
+) -> None:
+    if not field.nullable and col.null_count > 0:
+        raise ValueError(
+            f"Non-nullable target field '{path}' contains {col.null_count} null value(s)."
+        )
+    dtype = field.type
+    if not pa.types.is_nested(dtype):
+        return
+    chunks: list[Any] = col.chunks if isinstance(col, pa.ChunkedArray) else [col]
+    for chunk in chunks:
+        if len(chunk) == 0:
+            continue
+        if pa.types.is_struct(dtype):
+            active = chunk.filter(chunk.is_valid()) if chunk.null_count > 0 else chunk
+            if len(active) == 0:
+                continue
+            for idx, sub_field in enumerate(dtype):
+                _validate_arrow_nullability(
+                    active.field(idx), sub_field, f"{path}.{sub_field.name}"
+                )
+        elif pa.types.is_map(dtype):
+            active = chunk.filter(chunk.is_valid()) if chunk.null_count > 0 else chunk
+            if len(active) == 0:
+                continue
+            start = active.offsets[0].as_py()
+            end = active.offsets[-1].as_py()
+            if start < end:
+                _validate_arrow_nullability(
+                    active.keys[start:end], dtype.key_field, f"{path}.key"
+                )
+                _validate_arrow_nullability(
+                    active.items[start:end], dtype.item_field, f"{path}.value"
+                )
+        elif pa.types.is_list(dtype) or pa.types.is_large_list(dtype):
+            flattened = chunk.flatten()
+            if len(flattened) > 0:
+                _validate_arrow_nullability(
+                    flattened, dtype.value_field, f"{path}.{dtype.value_field.name}"
+                )
+
+
 class EventKind(str, Enum):
     """Categorization of a change event based on payload presence, destination, and schema markers."""
 
@@ -84,7 +178,8 @@ class SchemaDiff:
     removed_fields: tuple[pa.Field, ...] = ()
     changed_fields: tuple[tuple[pa.Field, pa.Field], ...] = ()
     reordered: bool = False
-    primary_keys_changed: bool = False
+    key_fields_changed: bool = False
+    key_schema_changed: bool = False
 
     @property
     def has_changes(self) -> bool:
@@ -93,27 +188,42 @@ class SchemaDiff:
             or self.removed_fields
             or self.changed_fields
             or self.reordered
-            or self.primary_keys_changed
+            or self.key_fields_changed
+            or self.key_schema_changed
         )
 
     @property
     def is_additive(self) -> bool:
-        return (
-            bool(self.added_fields)
-            and not self.removed_fields
-            and not self.changed_fields
-            and not self.reordered
-            and not self.primary_keys_changed
+        if (
+            self.removed_fields
+            or self.reordered
+            or self.key_fields_changed
+            or self.key_schema_changed
+        ):
+            return False
+        if not self.added_fields and not self.changed_fields:
+            return False
+        if any(not f.nullable for f in self.added_fields):
+            return False
+        return all(
+            _is_additive_struct_change(old_f, new_f)
+            for old_f, new_f in self.changed_fields
         )
 
     @property
     def is_compatible(self) -> bool:
-        if self.removed_fields or self.primary_keys_changed:
+        if (
+            self.removed_fields
+            or self.key_fields_changed
+            or self.key_schema_changed
+            or any(not f.nullable for f in self.added_fields)
+        ):
             return False
         if not self.changed_fields:
             return True
         if any(
             _has_lossy_promotion(old_f.type, new_f.type)
+            or _has_non_nullable_addition(old_f.type, new_f.type)
             for old_f, new_f in self.changed_fields
         ):
             return False
@@ -132,7 +242,7 @@ class TableSchema:
 
     destination: str
     arrow_schema: pa.Schema
-    primary_keys: tuple[str, ...] = ()
+    key_fields: tuple[str, ...] = ()
     key_schema: pa.Schema | None = None
 
     def __post_init__(self) -> None:
@@ -174,8 +284,13 @@ class TableSchema:
         reordered = [name for name in old_pa.names if name in new_map] != [
             name for name in new_pa.names if name in old_map
         ]
-        primary_keys_changed = (
-            self.primary_keys != previous.primary_keys
+        key_fields_changed = (
+            self.key_fields != previous.key_fields
+            if isinstance(previous, TableSchema)
+            else False
+        )
+        key_schema_changed = (
+            self.key_schema != previous.key_schema
             if isinstance(previous, TableSchema)
             else False
         )
@@ -184,7 +299,8 @@ class TableSchema:
             removed_fields=removed,
             changed_fields=changed,
             reordered=reordered,
-            primary_keys_changed=primary_keys_changed,
+            key_fields_changed=key_fields_changed,
+            key_schema_changed=key_schema_changed,
         )
 
 
@@ -208,16 +324,15 @@ class ChangeRecord:
         stripped = self.destination.strip()
         if stripped != self.destination:
             object.__setattr__(self, "destination", stripped)
-        if self.value is None:
-            if self.kind not in (EventKind.DATA, EventKind.TOMBSTONE):
-                raise ValueError(
-                    f"ChangeRecord with kind '{self.kind.value}' cannot have a null value."
-                )
+        if self.kind is EventKind.TOMBSTONE:
+            if self.value is not None:
+                raise ValueError("Tombstone ChangeRecord cannot have a non-null value.")
             if not self.key:
                 raise ValueError("Tombstone ChangeRecord requires a non-empty key.")
-            object.__setattr__(self, "kind", EventKind.TOMBSTONE)
-        elif self.kind is EventKind.TOMBSTONE:
-            raise ValueError("Tombstone ChangeRecord cannot have a non-null value.")
+        elif self.value is None:
+            raise ValueError(
+                f"ChangeRecord with kind '{self.kind.value}' cannot have a null value."
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -252,12 +367,19 @@ class TableBatch:
             target_schema, check_metadata=True
         ):
             return table
-        arrays = [
-            table.column(f.name).cast(f.type)
-            if table.schema.get_field_index(f.name) != -1
-            else pa.nulls(table.num_rows, type=f.type)
-            for f in target_schema
-        ]
+        arrays: list[pa.Array | pa.ChunkedArray] = []
+        for f in target_schema:
+            idx = table.schema.get_field_index(f.name)
+            if idx != -1:
+                col = table.column(idx).cast(f.type)
+                _validate_arrow_nullability(col, f, f.name)
+                arrays.append(col)
+            else:
+                if not f.nullable and table.num_rows > 0:
+                    raise ValueError(
+                        f"Cannot populate missing non-nullable target field '{f.name}' with nulls."
+                    )
+                arrays.append(pa.nulls(table.num_rows, type=f.type))
         return pa.Table.from_arrays(arrays, schema=target_schema)
 
     def __len__(self) -> int:

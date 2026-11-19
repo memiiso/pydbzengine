@@ -21,6 +21,24 @@ assert "pyiceberg" not in sys.modules, "pyiceberg was imported by pydbzengine.sc
         )
         self.assertEqual(res.returncode, 0, msg=f"Process failed: {res.stderr}")
 
+    def test_schema_spec_has_no_pyarrow_or_jvm_imports(self) -> None:
+        """Verifies pydbzengine/schema/spec.py has zero pyarrow or jpype dependencies."""
+        import ast
+        from pathlib import Path
+
+        spec_path = (
+            Path(__file__).resolve().parents[2] / "pydbzengine" / "schema" / "spec.py"
+        )
+        tree = ast.parse(spec_path.read_text(encoding="utf-8"))
+        imported: set[str] = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                imported.update(alias.name.split(".")[0] for alias in node.names)
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                imported.add(node.module.split(".")[0])
+        self.assertNotIn("pyarrow", imported)
+        self.assertNotIn("jpype", imported)
+
     def test_engine_does_not_import_schema(self) -> None:
         """Verifies in an isolated Python process that importing pydbzengine.engine does not load pydbzengine.schema."""
         code = """

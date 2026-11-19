@@ -4,6 +4,7 @@ import json
 from abc import ABC, abstractmethod
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
+from decimal import Decimal
 from typing import Any, ClassVar
 
 import pyarrow as pa
@@ -13,26 +14,25 @@ from pydbzengine.engine.base import (
     EventFormat,
 )
 from pydbzengine.engine.config import DebeziumConfig
+from pydbzengine.schema.handlers import (
+    DataTypeHandler,
+    IntTypeHandler,
+    MapTypeHandler,
+    StructTypeHandler,
+)
 from pydbzengine.schema.models import (
     ChangeBatch,
     ChangeRecord,
     EventKind,
     TableSchema,
 )
-from pydbzengine.schema.types import (
-    DataTypeHandler,
-    FieldSpec,
-    IntTypeHandler,
-    MapTypeHandler,
-    StructTypeHandler,
-    TypeRegistry,
-)
+from pydbzengine.schema.registry import TypeRegistry
+from pydbzengine.schema.spec import FieldSpec
 
 __all__ = [
     "ConnectEventConverter",
     "EventConverter",
     "JsonEventConverter",
-    "SchemalessJsonEventConverter",
 ]
 
 
@@ -51,7 +51,7 @@ def _decode_json_object(raw: Any, context: str) -> dict[str, Any]:
         )
 
     try:
-        parsed = json.loads(payload_str)
+        parsed = json.loads(payload_str, parse_float=Decimal)
     except json.JSONDecodeError as e:
         raise ValueError(f"Invalid JSON in {context}: {e}") from e
 
@@ -67,7 +67,7 @@ class _CompiledKey:
     raw_schema: Any
     handler: DataTypeHandler
     arrow_schema: pa.Schema | None
-    primary_keys: tuple[str, ...]
+    key_fields: tuple[str, ...]
 
     def matches(self, raw_schema: Any) -> bool:
         return bool(raw_schema is self.raw_schema or raw_schema == self.raw_schema)
@@ -90,75 +90,30 @@ class _CachedSchema:
         return bool(key_schema is self.key_schema or key_schema == self.key_schema)
 
 
-def _merge_inferred_type(prev_t: pa.DataType, curr_t: pa.DataType) -> pa.DataType:
-    if prev_t == curr_t or pa.types.is_null(curr_t):
-        return prev_t
-    if pa.types.is_null(prev_t):
-        return curr_t
-    if pa.types.is_floating(prev_t) and pa.types.is_integer(curr_t):
-        return prev_t
-    if pa.types.is_struct(prev_t) and pa.types.is_struct(curr_t):
-        return pa.struct(_merge_inferred_fields(list(prev_t), list(curr_t)))
-    if pa.types.is_list(prev_t) and pa.types.is_list(curr_t):
-        return pa.list_(_merge_inferred_field(prev_t.value_field, curr_t.value_field))
-    if pa.types.is_map(prev_t) and pa.types.is_map(curr_t):
-        return pa.map_(
-            _merge_inferred_field(prev_t.key_field, curr_t.key_field).with_nullable(
-                False
-            ),
-            _merge_inferred_field(prev_t.item_field, curr_t.item_field),
-        )
-    return curr_t
-
-
-def _merge_inferred_field(prev_f: pa.Field, curr_f: pa.Field) -> pa.Field:
-    return pa.field(
-        curr_f.name,
-        _merge_inferred_type(prev_f.type, curr_f.type),
-        nullable=prev_f.nullable or curr_f.nullable,
-    )
-
-
-def _merge_inferred_fields(
-    prev_fields: list[pa.Field],
-    curr_fields: list[pa.Field],
-) -> list[pa.Field]:
-    curr_map = {f.name: f for f in curr_fields}
-    prev_names = {f.name for f in prev_fields}
-    merged: list[pa.Field] = []
-    for pf in prev_fields:
-        cf = curr_map.get(pf.name)
-        if cf is None:
-            merged.append(pf.with_nullable(True))
-        else:
-            merged.append(_merge_inferred_field(pf, cf))
-    for cf in curr_fields:
-        if cf.name not in prev_names:
-            merged.append(cf.with_nullable(True))
-    return merged
-
-
-def _merge_inferred_schema(prev: pa.Schema, current: pa.Schema) -> pa.Schema:
-    return pa.schema(_merge_inferred_fields(list(prev), list(current)))
-
-
 class EventConverter(ABC):
-    """Base contract for CDC event converters."""
+    """Base pipeline for schema-enabled CDC event converters (Connect and JSON)."""
 
     DEFAULT_HEARTBEAT_PREFIX: ClassVar[str] = DebeziumConfig.DEFAULT_HEARTBEAT_PREFIX
     format: ClassVar[EventFormat]
-    schemas_enabled: ClassVar[bool]
+    schemas_enabled: ClassVar[bool] = True
 
     def __init__(
         self,
         *,
         heartbeat_prefix: str = DEFAULT_HEARTBEAT_PREFIX,
+        default_variable_scale: int = 10,
     ) -> None:
         if not isinstance(heartbeat_prefix, str) or not heartbeat_prefix.strip():
             raise ValueError(
                 f"heartbeat_prefix must be a non-empty string, got {heartbeat_prefix!r}"
             )
         self.heartbeat_prefix: str = heartbeat_prefix.strip()
+        self.default_variable_scale: int = default_variable_scale
+        self.registry: TypeRegistry = TypeRegistry(
+            default_variable_scale=default_variable_scale
+        )
+        self._cache: dict[str, _CachedSchema] = {}
+        self._key_cache: dict[str, _CompiledKey] = {}
 
     @classmethod
     def from_config(
@@ -177,61 +132,20 @@ class EventConverter(ABC):
                 heartbeat_prefix=config.heartbeat_prefix,
                 default_variable_scale=default_variable_scale,
             )
-        if config.schemas_enabled:
-            return JsonEventConverter(
-                heartbeat_prefix=config.heartbeat_prefix,
-                default_variable_scale=default_variable_scale,
+        if not config.schemas_enabled:
+            raise ValueError(
+                "pydbzengine.schema requires schema-enabled events "
+                "(EventFormat.CONNECT or EventFormat.JSON with schemas_enabled=True). "
+                "For schemaless JSON payloads, subclass BasePythonChangeHandler directly."
             )
-        return SchemalessJsonEventConverter(
+        return JsonEventConverter(
             heartbeat_prefix=config.heartbeat_prefix,
+            default_variable_scale=default_variable_scale,
         )
 
     def convert(self, events: Iterable[ChangeEvent]) -> ChangeBatch:
         """Converts an iterable of raw ChangeEvents into an ordered ChangeBatch."""
         return ChangeBatch(records=tuple(self.convert_event(event) for event in events))
-
-    @abstractmethod
-    def convert_event(self, event: ChangeEvent) -> ChangeRecord:
-        """Converts a single raw ChangeEvent into a ChangeRecord."""
-
-    @staticmethod
-    def _destination(event: ChangeEvent) -> str:
-        raw_dest = event.destination()
-        if raw_dest is None:
-            raise ValueError("Record contains an empty or missing destination.")
-        if not (
-            isinstance(raw_dest, str) or type(raw_dest).__name__ == "java.lang.String"
-        ):
-            raise TypeError(
-                f"Expected str for record destination, got {type(raw_dest).__name__}: {raw_dest!r}"
-            )
-        destination = str(raw_dest).strip()
-        if not destination:
-            raise ValueError("Record contains an empty or missing destination.")
-        return destination
-
-    @staticmethod
-    def _partition(event: ChangeEvent) -> int | None:
-        val = event.partition()
-        return IntTypeHandler.decode_connect_int(val) if val is not None else None
-
-
-class _SchemaEventConverter(EventConverter):
-    """Shared pipeline for schema-enabled converters (Connect and JSON)."""
-
-    def __init__(
-        self,
-        *,
-        heartbeat_prefix: str = EventConverter.DEFAULT_HEARTBEAT_PREFIX,
-        default_variable_scale: int = 10,
-    ) -> None:
-        super().__init__(heartbeat_prefix=heartbeat_prefix)
-        self.default_variable_scale: int = default_variable_scale
-        self.registry: TypeRegistry = TypeRegistry(
-            default_variable_scale=default_variable_scale
-        )
-        self._cache: dict[str, _CachedSchema] = {}
-        self._key_cache: dict[str, _CompiledKey] = {}
 
     @abstractmethod
     def _parse_field_spec(self, raw_schema: Any, field_name: str) -> FieldSpec:
@@ -249,6 +163,27 @@ class _SchemaEventConverter(EventConverter):
     ) -> tuple[Any, Any, Any, Any]:
         """Unpacks (raw_val_schema, raw_val, raw_key_schema, raw_key) from a ChangeEvent."""
 
+    @staticmethod
+    def _destination(event: ChangeEvent) -> str:
+        raw_dest = event.destination()
+        if raw_dest is None:
+            raise ValueError("Record contains an empty or missing destination.")
+        if not (
+            isinstance(raw_dest, str) or type(raw_dest).__name__ == "java.lang.String"
+        ):
+            raise TypeError(
+                f"Expected str for record destination, got {type(raw_dest).__name__}: {raw_dest!r}"
+            )
+        dest = str(raw_dest).strip()
+        if not dest:
+            raise ValueError("Record contains an empty or missing destination.")
+        return dest
+
+    @staticmethod
+    def _partition(event: ChangeEvent) -> int | None:
+        val = event.partition()
+        return IntTypeHandler.decode_connect_int(val) if val is not None else None
+
     def _resolve_key(
         self,
         destination: str,
@@ -265,19 +200,19 @@ class _SchemaEventConverter(EventConverter):
         handler = key_field.handler
         if isinstance(handler, StructTypeHandler):
             arrow_schema: pa.Schema | None = handler.arrow_schema
-            primary_keys: tuple[str, ...] = tuple(f.name for f in handler.fields)
+            key_fields: tuple[str, ...] = tuple(f.name for f in handler.fields)
         elif isinstance(handler, MapTypeHandler):
             arrow_schema = None
-            primary_keys = ()
+            key_fields = ()
         else:
             arrow_schema = pa.schema([key_field.arrow_field])
-            primary_keys = (key_field.name,)
+            key_fields = (key_field.name,)
 
         compiled = _CompiledKey(
             raw_schema=raw_key_schema,
             handler=handler,
             arrow_schema=arrow_schema,
-            primary_keys=primary_keys,
+            key_fields=key_fields,
         )
         self._key_cache[destination] = compiled
         return compiled
@@ -300,9 +235,7 @@ class _SchemaEventConverter(EventConverter):
         table_schema = TableSchema(
             destination=destination,
             arrow_schema=value_handler.arrow_schema,
-            primary_keys=(
-                compiled_key.primary_keys if compiled_key is not None else ()
-            ),
+            key_fields=(compiled_key.key_fields if compiled_key is not None else ()),
             key_schema=(
                 compiled_key.arrow_schema if compiled_key is not None else None
             ),
@@ -350,6 +283,7 @@ class _SchemaEventConverter(EventConverter):
         ).table_schema
 
     def convert_event(self, event: ChangeEvent) -> ChangeRecord:
+        """Converts a single raw ChangeEvent into a ChangeRecord."""
         destination = self._destination(event)
         partition = self._partition(event)
         raw_val_schema, raw_val, raw_key_schema, raw_key = self._unpack_event(
@@ -428,25 +362,42 @@ class _SchemaEventConverter(EventConverter):
         return {"key": converted}
 
 
-# ============================================================================
-# Scenario 1: Connect Event Converter (format=CONNECT, schemas_enabled=True)
-# ============================================================================
-
-
-class ConnectEventConverter(_SchemaEventConverter):
+class ConnectEventConverter(EventConverter):
     """
     Dedicated converter for in-memory Java Connect SourceRecords (`EventFormat.CONNECT`).
     Schemas are always enabled and cached per destination with strong Java references.
     """
 
     format: ClassVar[EventFormat] = EventFormat.CONNECT
-    schemas_enabled: ClassVar[bool] = True
 
     def _parse_field_spec(self, raw_schema: Any, field_name: str) -> FieldSpec:
         return FieldSpec.from_connect(raw_schema, field_name=field_name)
 
     def _convert_with_handler(self, handler: DataTypeHandler, raw_val: Any) -> Any:
         return handler.convert_connect(raw_val)
+
+    @staticmethod
+    def _is_empty_connect_struct(raw_key_schema: Any, raw_key: Any) -> bool:
+        if raw_key_schema is None:
+            return False
+        j_type = raw_key_schema.type()
+        if j_type is None or str(j_type.name()).strip().lower() != "struct":
+            return False
+        if raw_key_schema.fields():
+            return False
+        if raw_key is None:
+            return True
+        if hasattr(raw_key, "schema"):
+            struct_schema = raw_key.schema()
+            if struct_schema is None:
+                return False
+            st_type = struct_schema.type()
+            return (
+                st_type is not None
+                and str(st_type.name()).strip().lower() == "struct"
+                and not struct_schema.fields()
+            )
+        return False
 
     def _unpack_event(
         self,
@@ -459,27 +410,22 @@ class ConnectEventConverter(_SchemaEventConverter):
                 f"Expected Java Connect SourceRecord with valueSchema() for destination '{destination}', "
                 f"got {type(source_rec).__name__}"
             )
-        return (
-            source_rec.valueSchema(),
-            source_rec.value(),
-            source_rec.keySchema(),
-            source_rec.key(),
-        )
+        raw_val_schema = source_rec.valueSchema()
+        raw_val = source_rec.value()
+        raw_key_schema = source_rec.keySchema()
+        raw_key = source_rec.key()
+        if self._is_empty_connect_struct(raw_key_schema, raw_key):
+            raw_key_schema, raw_key = None, None
+        return raw_val_schema, raw_val, raw_key_schema, raw_key
 
 
-# ============================================================================
-# Scenario 2: Schema-Enabled JSON Event Converter (format=JSON, schemas_enabled=True)
-# ============================================================================
-
-
-class JsonEventConverter(_SchemaEventConverter):
+class JsonEventConverter(EventConverter):
     """
     Dedicated converter for schema-enabled JSON records (`EventFormat.JSON`, `schemas_enabled=True`).
     Strictly requires `{"schema": ..., "payload": ...}` envelopes on records.
     """
 
     format: ClassVar[EventFormat] = EventFormat.JSON
-    schemas_enabled: ClassVar[bool] = True
 
     def _parse_field_spec(self, raw_schema: Any, field_name: str) -> FieldSpec:
         return FieldSpec.from_json(raw_schema, field_name=field_name)
@@ -500,9 +446,13 @@ class JsonEventConverter(_SchemaEventConverter):
         )
         if (
             isinstance(key_schema, Mapping)
-            and key_schema.get("type") == "struct"
-            and key_schema.get("fields") == []
-            and not key_payload
+            and isinstance(key_schema.get("type"), str)
+            and key_schema["type"].strip().lower() == "struct"
+            and (key_schema.get("fields") == [] or key_schema.get("fields") is None)
+            and (
+                key_payload is None
+                or (isinstance(key_payload, Mapping) and len(key_payload) == 0)
+            )
         ):
             key_schema, key_payload = None, None
         return val_schema, val_payload, key_schema, key_payload
@@ -515,121 +465,7 @@ class JsonEventConverter(_SchemaEventConverter):
         if "schema" not in envelope or "payload" not in envelope:
             raise ValueError(
                 f"Missing required 'schema' and 'payload' blocks in {context}. "
-                "If your connector is configured with 'schemas.enable=false', "
-                "use SchemalessJsonEventConverter or configure DebeziumConfig with schemas.enable=false."
+                "Enable schemas ('converter.schemas.enable=true') for pydbzengine.schema, "
+                "or subclass BasePythonChangeHandler for schemaless JSON payloads."
             )
         return envelope["schema"], envelope["payload"]
-
-
-# ============================================================================
-# Scenario 3: Schemaless JSON Event Converter (format=JSON, schemas_enabled=False)
-# ============================================================================
-
-
-class SchemalessJsonEventConverter(EventConverter):
-    """
-    Dedicated converter for schemaless JSON payloads (`EventFormat.JSON`, `schemas_enabled=False`).
-    Infers and unifies PyArrow schemas per destination across batches.
-    """
-
-    format: ClassVar[EventFormat] = EventFormat.JSON
-    schemas_enabled: ClassVar[bool] = False
-
-    def __init__(
-        self,
-        *,
-        heartbeat_prefix: str = EventConverter.DEFAULT_HEARTBEAT_PREFIX,
-    ) -> None:
-        super().__init__(heartbeat_prefix=heartbeat_prefix)
-        self._schemas: dict[str, TableSchema] = {}
-
-    def convert(self, events: Iterable[ChangeEvent]) -> ChangeBatch:
-        ordered_items: list[
-            tuple[
-                str,
-                dict[str, Any] | None,
-                dict[str, Any] | None,
-                int | None,
-                EventKind,
-            ]
-        ] = []
-        rows_by_dest: dict[str, list[dict[str, Any]]] = {}
-        keys_by_dest: dict[str, list[dict[str, Any]]] = {}
-
-        for event in events:
-            destination = self._destination(event)
-            partition = self._partition(event)
-            raw_val = event.value()
-            raw_key = event.key()
-            key_payload: dict[str, Any] | None = (
-                _decode_json_object(
-                    raw_key, f"CDC record key for destination '{destination}'"
-                )
-                if raw_key is not None
-                else None
-            )
-            if not key_payload:
-                key_payload = None
-
-            payload: dict[str, Any] | None = (
-                _decode_json_object(raw_val, f"event for destination '{destination}'")
-                if raw_val is not None
-                else None
-            )
-            if payload is None and key_payload is None:
-                raise ValueError(
-                    f"Tombstone for destination '{destination}' has no key."
-                )
-
-            kind = EventKind.classify(destination, payload, self.heartbeat_prefix)
-            ordered_items.append((destination, payload, key_payload, partition, kind))
-            if kind is EventKind.DATA and payload is not None:
-                rows_by_dest.setdefault(destination, []).append(payload)
-                if key_payload is not None:
-                    keys_by_dest.setdefault(destination, []).append(key_payload)
-
-        schemas_by_dest: dict[str, TableSchema] = {}
-        for destination, dest_rows in rows_by_dest.items():
-            dest_keys = keys_by_dest.get(destination, [])
-            arrow_schema = pa.Table.from_pylist(dest_rows).schema
-            key_pa_schema = (
-                pa.Table.from_pylist(dest_keys).schema if dest_keys else None
-            )
-            prev = self._schemas.get(destination)
-            if prev is not None:
-                arrow_schema = _merge_inferred_schema(prev.arrow_schema, arrow_schema)
-                if prev.key_schema is not None and key_pa_schema is not None:
-                    key_pa_schema = _merge_inferred_schema(
-                        prev.key_schema, key_pa_schema
-                    )
-                elif key_pa_schema is None:
-                    key_pa_schema = prev.key_schema
-
-            pk_names = tuple(key_pa_schema.names) if key_pa_schema is not None else ()
-            table_schema = TableSchema(
-                destination=destination,
-                arrow_schema=arrow_schema,
-                primary_keys=pk_names,
-                key_schema=key_pa_schema,
-            )
-            self._schemas[destination] = table_schema
-            schemas_by_dest[destination] = table_schema
-
-        return ChangeBatch(
-            records=tuple(
-                ChangeRecord(
-                    destination=destination,
-                    value=row,
-                    key=key_dict,
-                    schema=(
-                        schemas_by_dest[destination] if kind is EventKind.DATA else None
-                    ),
-                    partition=part,
-                    kind=kind,
-                )
-                for destination, row, key_dict, part, kind in ordered_items
-            )
-        )
-
-    def convert_event(self, event: ChangeEvent) -> ChangeRecord:
-        return self.convert([event]).records[0]

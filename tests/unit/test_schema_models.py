@@ -15,7 +15,7 @@ from pydbzengine.schema import (
     TableBatch,
     TableSchema,
 )
-from pydbzengine.schema.types import (
+from pydbzengine.schema.handlers import (
     DecimalTypeHandler,
     IntTypeHandler,
     SchemaField,
@@ -50,7 +50,7 @@ class TestSchemaModels(unittest.TestCase):
             EventKind.DATA,
         )
 
-    def test_table_schema_equality_row_schema_and_diff(self) -> None:
+    def test_table_schema_equality_and_diff(self) -> None:
         pa_s1 = pa.schema(
             [
                 pa.field(
@@ -62,17 +62,18 @@ class TestSchemaModels(unittest.TestCase):
                 pa.field("name", pa.string(), nullable=True),
             ]
         )
+        key_pa = pa.schema([pa.field("id", pa.int32(), nullable=False)])
         s1 = TableSchema(
             destination="inventory.customers",
             arrow_schema=pa_s1,
-            primary_keys=("id",),
-            key_schema=pa.schema([pa.field("id", pa.int32(), nullable=False)]),
+            key_fields=("id",),
+            key_schema=key_pa,
         )
         s2 = TableSchema(
             destination="inventory.customers",
             arrow_schema=pa_s1,
-            primary_keys=("id",),
-            key_schema=pa.schema([pa.field("id", pa.int32(), nullable=False)]),
+            key_fields=("id",),
+            key_schema=key_pa,
         )
         self.assertEqual(s1, s2)
         self.assertEqual(hash(s1), hash(s2))
@@ -97,7 +98,8 @@ class TestSchemaModels(unittest.TestCase):
         s3 = TableSchema(
             destination="inventory.customers",
             arrow_schema=pa_s3,
-            primary_keys=("id",),
+            key_fields=("id",),
+            key_schema=key_pa,
         )
         diff_add: SchemaDiff = s3.diff(s1)
         self.assertTrue(diff_add.has_changes)
@@ -107,13 +109,16 @@ class TestSchemaModels(unittest.TestCase):
         self.assertEqual(diff_add.added_fields[0].name, "email")
         self.assertEqual(diff_add.removed_fields, ())
         self.assertEqual(diff_add.changed_fields, ())
+        self.assertFalse(diff_add.key_fields_changed)
+        self.assertFalse(diff_add.key_schema_changed)
 
         # Breaking evolution diff (type change + column drop)
         pa_s4 = pa.schema([pa.field("id", pa.int64(), nullable=False)])
         s4 = TableSchema(
             destination="inventory.customers",
             arrow_schema=pa_s4,
-            primary_keys=("id",),
+            key_fields=("id",),
+            key_schema=key_pa,
         )
         diff_break = s4.diff(s1)
         self.assertTrue(diff_break.has_changes)
@@ -141,7 +146,7 @@ class TestSchemaModels(unittest.TestCase):
         schema = TableSchema(
             destination="inventory.customers",
             arrow_schema=env_pa,
-            primary_keys=("id",),
+            key_fields=("id",),
         )
 
         create_rec = ChangeRecord(
@@ -184,17 +189,18 @@ class TestSchemaModels(unittest.TestCase):
             ],
         )
 
-    def test_tombstone_change_record(self) -> None:
+    def test_tombstone_change_record_requires_explicit_kind(self) -> None:
         schema = TableSchema(
             destination="inventory.customers",
             arrow_schema=pa.schema([pa.field("id", pa.int32())]),
-            primary_keys=("id",),
+            key_fields=("id",),
         )
         ts_with_schema = ChangeRecord(
             destination="inventory.customers",
             schema=schema,
             value=None,
             key={"id": 42},
+            kind=EventKind.TOMBSTONE,
         )
         self.assertEqual(ts_with_schema.kind, EventKind.TOMBSTONE)
         self.assertIsNone(ts_with_schema.value)
@@ -206,10 +212,26 @@ class TestSchemaModels(unittest.TestCase):
             schema=None,
             value=None,
             key={"id": 42},
+            kind=EventKind.TOMBSTONE,
         )
         self.assertEqual(ts_without_schema.kind, EventKind.TOMBSTONE)
         self.assertIsNone(ts_without_schema.schema)
         self.assertEqual(ts_without_schema.destination, "inventory.customers")
+
+        # Default kind=EventKind.DATA with value=None fails fast instead of mutating kind
+        with self.assertRaisesRegex(ValueError, "kind 'data' cannot have a null value"):
+            ChangeRecord(
+                destination="inventory.customers",
+                value=None,
+                key={"id": 42},
+            )
+        with self.assertRaisesRegex(ValueError, "kind 'data' cannot have a null value"):
+            ChangeRecord(
+                destination="inventory.customers",
+                value=None,
+                key={"id": 42},
+                kind=EventKind.DATA,
+            )
 
     def test_table_batch_to_arrow(self) -> None:
         val_handler = StructTypeHandler(
@@ -221,7 +243,7 @@ class TestSchemaModels(unittest.TestCase):
         schema = TableSchema(
             destination="inventory.orders",
             arrow_schema=val_handler.arrow_schema,
-            primary_keys=("id",),
+            key_fields=("id",),
         )
         self.assertEqual(schema.arrow_schema, val_handler.arrow_schema)
         price_b64 = base64.b64encode((1999).to_bytes(2, "big", signed=True)).decode(
@@ -242,6 +264,138 @@ class TestSchemaModels(unittest.TestCase):
         tbl = tb.to_arrow()
         self.assertEqual(tbl.num_rows, 1)
         self.assertEqual(tbl.to_pylist(), [{"id": 1, "price": Decimal("19.99")}])
+
+    def test_table_batch_to_arrow_enforces_target_schema_nullability(self) -> None:
+        source_pa = pa.schema(
+            [
+                pa.field("id", pa.int32(), nullable=False),
+                pa.field("name", pa.string(), nullable=True),
+            ]
+        )
+        schema = TableSchema(destination="inventory.users", arrow_schema=source_pa)
+        rec_with_null = ChangeRecord(
+            destination="inventory.users",
+            schema=schema,
+            value={"id": 1, "name": None},
+            key={"id": 1},
+        )
+        rec_no_null = ChangeRecord(
+            destination="inventory.users",
+            schema=schema,
+            value={"id": 2, "name": "Alice"},
+            key={"id": 2},
+        )
+
+        # Missing non-nullable column in target_schema fails fast for non-empty batch
+        target_missing_req = pa.schema(
+            [
+                pa.field("id", pa.int32(), nullable=False),
+                pa.field("required_col", pa.string(), nullable=False),
+            ]
+        )
+        with self.assertRaisesRegex(ValueError, "missing non-nullable target field"):
+            TableBatch(schema=schema, records=(rec_no_null,)).to_arrow(
+                target_schema=target_missing_req
+            )
+
+        # Empty batch with missing non-nullable column succeeds (0 nulls)
+        empty_tbl = TableBatch(schema=schema, records=()).to_arrow(
+            target_schema=target_missing_req
+        )
+        self.assertEqual(empty_tbl.num_rows, 0)
+        self.assertEqual(empty_tbl.schema, target_missing_req)
+
+        # Tightening existing nullable column to nullable=False fails when nulls are present
+        target_tight = pa.schema(
+            [
+                pa.field("id", pa.int32(), nullable=False),
+                pa.field("name", pa.string(), nullable=False),
+            ]
+        )
+        with self.assertRaisesRegex(ValueError, "Non-nullable target field 'name'"):
+            TableBatch(schema=schema, records=(rec_with_null,)).to_arrow(
+                target_schema=target_tight
+            )
+
+        # Tightening succeeds when the batch contains no nulls in that column
+        aligned = TableBatch(schema=schema, records=(rec_no_null,)).to_arrow(
+            target_schema=target_tight
+        )
+        self.assertEqual(aligned.schema, target_tight)
+        self.assertEqual(aligned.to_pylist(), [{"id": 2, "name": "Alice"}])
+
+        # Nested list and map non-nullable target fields reject null elements while permitting null parents
+        nested_src = TableSchema(
+            destination="inventory.nested",
+            arrow_schema=pa.schema(
+                [
+                    pa.field(
+                        "xs", pa.list_(pa.field("item", pa.int32(), nullable=True))
+                    ),
+                    pa.field(
+                        "m",
+                        pa.map_(
+                            pa.field("k", pa.string(), nullable=False),
+                            pa.field("v", pa.int32(), nullable=True),
+                        ),
+                    ),
+                ]
+            ),
+        )
+        nested_target = pa.schema(
+            [
+                pa.field("xs", pa.list_(pa.field("item", pa.int32(), nullable=False))),
+                pa.field(
+                    "m",
+                    pa.map_(
+                        pa.field("k", pa.string(), nullable=False),
+                        pa.field("v", pa.int32(), nullable=False),
+                    ),
+                ),
+            ]
+        )
+        rec_null_list_elem = ChangeRecord(
+            destination="inventory.nested",
+            schema=nested_src,
+            value={"xs": [1, None], "m": {"a": 1}},
+        )
+        with self.assertRaisesRegex(
+            ValueError, r"Non-nullable target field 'xs\.item'"
+        ):
+            TableBatch(schema=nested_src, records=(rec_null_list_elem,)).to_arrow(
+                target_schema=nested_target
+            )
+
+        rec_null_map_val = ChangeRecord(
+            destination="inventory.nested",
+            schema=nested_src,
+            value={"xs": [1, 2], "m": {"a": None}},
+        )
+        with self.assertRaisesRegex(
+            ValueError, r"Non-nullable target field 'm\.value'"
+        ):
+            TableBatch(schema=nested_src, records=(rec_null_map_val,)).to_arrow(
+                target_schema=nested_target
+            )
+
+        rec_null_parents = ChangeRecord(
+            destination="inventory.nested",
+            schema=nested_src,
+            value={"xs": None, "m": None},
+        )
+        rec_valid_nested = ChangeRecord(
+            destination="inventory.nested",
+            schema=nested_src,
+            value={"xs": [1, 2], "m": {"a": 10}},
+        )
+        nested_aligned = TableBatch(
+            schema=nested_src, records=(rec_null_parents, rec_valid_nested)
+        ).to_arrow(target_schema=nested_target)
+        self.assertEqual(nested_aligned.schema, nested_target)
+        self.assertEqual(
+            nested_aligned.to_pylist(),
+            [{"xs": None, "m": None}, {"xs": [1, 2], "m": [("a", 10)]}],
+        )
 
     def test_change_batch_retains_arrival_order_and_filters_by_kind(self) -> None:
         s_data = TableSchema(
@@ -264,7 +418,13 @@ class TestSchemaModels(unittest.TestCase):
         r3 = ChangeRecord(
             destination="t1", schema=s_data, value={"id": 2}, key={"id": 2}
         )
-        ts = ChangeRecord(destination="t1", schema=None, value=None, key={"id": 99})
+        ts = ChangeRecord(
+            destination="t1",
+            schema=None,
+            value=None,
+            key={"id": 99},
+            kind=EventKind.TOMBSTONE,
+        )
 
         batch = ChangeBatch(records=(r1, r2, r3, ts))
         self.assertEqual(len(batch), 4)
@@ -282,42 +442,137 @@ class TestSchemaModels(unittest.TestCase):
         self.assertEqual(tbl.num_rows, 2)
         self.assertEqual(tbl.to_pylist(), [{"id": 1}, {"id": 2}])
 
-    def test_envelope_schema_diff(self) -> None:
+    def test_envelope_schema_diff_is_additive_for_nullable_struct_additions(
+        self,
+    ) -> None:
         v1_fields = [
             pa.field("id", pa.int32(), nullable=False),
             pa.field("name", pa.string(), nullable=True),
         ]
-        v2_fields = [
+        v2_nullable_add = [
             pa.field("id", pa.int32(), nullable=False),
             pa.field("name", pa.string(), nullable=True),
             pa.field("email", pa.string(), nullable=True),
         ]
-        env_v1 = TableSchema(
-            destination="inventory.customers",
+        v2_non_null_add = [
+            pa.field("id", pa.int32(), nullable=False),
+            pa.field("name", pa.string(), nullable=True),
+            pa.field("required_flag", pa.bool_(), nullable=False),
+        ]
+        v2_widened = [
+            pa.field("id", pa.int64(), nullable=False),
+            pa.field("name", pa.string(), nullable=True),
+            pa.field("email", pa.string(), nullable=True),
+        ]
+        v2_reordered = [
+            pa.field("name", pa.string(), nullable=True),
+            pa.field("id", pa.int32(), nullable=False),
+            pa.field("email", pa.string(), nullable=True),
+        ]
+
+        def make_env(fields: list[pa.Field]) -> TableSchema:
+            return TableSchema(
+                destination="inventory.customers",
+                arrow_schema=pa.schema(
+                    [
+                        pa.field("before", pa.struct(fields)),
+                        pa.field("after", pa.struct(fields)),
+                        pa.field("op", pa.string()),
+                    ]
+                ),
+                key_fields=("id",),
+            )
+
+        env_v1 = make_env(v1_fields)
+        diff_add = make_env(v2_nullable_add).diff(env_v1)
+        self.assertTrue(diff_add.has_changes)
+        self.assertTrue(diff_add.is_additive)
+        self.assertTrue(diff_add.is_compatible)
+        self.assertEqual(
+            [f[0].name for f in diff_add.changed_fields], ["before", "after"]
+        )
+
+        # Adding nullable=False subfield inside before/after is neither additive nor compatible
+        diff_non_null = make_env(v2_non_null_add).diff(env_v1)
+        self.assertTrue(diff_non_null.has_changes)
+        self.assertFalse(diff_non_null.is_additive)
+        self.assertFalse(diff_non_null.is_compatible)
+
+        # Widening + adding subfield is compatible, not purely additive
+        diff_widen = make_env(v2_widened).diff(env_v1)
+        self.assertFalse(diff_widen.is_additive)
+        self.assertTrue(diff_widen.is_compatible)
+
+        # Reordering subfields inside struct is not additive
+        diff_reorder = make_env(v2_reordered).diff(env_v1)
+        self.assertFalse(diff_reorder.is_additive)
+
+    def test_schema_diff_rejects_non_nullable_additions_and_tracks_key_schema(
+        self,
+    ) -> None:
+        s1 = TableSchema(
+            destination="t1",
+            arrow_schema=pa.schema([pa.field("id", pa.int32(), nullable=False)]),
+            key_fields=("id",),
+            key_schema=pa.schema([pa.field("id", pa.int32(), nullable=False)]),
+        )
+        # Top-level non-nullable addition is neither additive nor compatible
+        s_top_req = TableSchema(
+            destination="t1",
             arrow_schema=pa.schema(
                 [
-                    pa.field("before", pa.struct(v1_fields)),
-                    pa.field("after", pa.struct(v1_fields)),
-                    pa.field("op", pa.string()),
+                    pa.field("id", pa.int32(), nullable=False),
+                    pa.field("tenant", pa.string(), nullable=False),
                 ]
             ),
-            primary_keys=("id",),
+            key_fields=("id",),
+            key_schema=s1.key_schema,
         )
-        env_v2 = TableSchema(
-            destination="inventory.customers",
+        diff_top_req = s_top_req.diff(s1)
+        self.assertTrue(diff_top_req.has_changes)
+        self.assertFalse(diff_top_req.is_additive)
+        self.assertFalse(diff_top_req.is_compatible)
+
+        # key_schema type change with unchanged key_fields is tracked
+        s_key_widened = TableSchema(
+            destination="t1",
+            arrow_schema=s1.arrow_schema,
+            key_fields=("id",),
+            key_schema=pa.schema([pa.field("id", pa.int64(), nullable=False)]),
+        )
+        diff_key_schema = s_key_widened.diff(s1)
+        self.assertFalse(diff_key_schema.key_fields_changed)
+        self.assertTrue(diff_key_schema.key_schema_changed)
+        self.assertTrue(diff_key_schema.has_changes)
+        self.assertFalse(diff_key_schema.is_additive)
+        self.assertFalse(diff_key_schema.is_compatible)
+
+        # Nested struct inside list adding non-nullable field is incompatible
+        s_list_old = TableSchema(
+            destination="t1",
+            arrow_schema=pa.schema(
+                [pa.field("items", pa.list_(pa.struct([pa.field("a", pa.int32())])))]
+            ),
+        )
+        s_list_new_req = TableSchema(
+            destination="t1",
             arrow_schema=pa.schema(
                 [
-                    pa.field("before", pa.struct(v2_fields)),
-                    pa.field("after", pa.struct(v2_fields)),
-                    pa.field("op", pa.string()),
+                    pa.field(
+                        "items",
+                        pa.list_(
+                            pa.struct(
+                                [
+                                    pa.field("a", pa.int32()),
+                                    pa.field("b", pa.string(), nullable=False),
+                                ]
+                            )
+                        ),
+                    )
                 ]
             ),
-            primary_keys=("id",),
         )
-        diff = env_v2.diff(env_v1)
-        self.assertTrue(diff.has_changes)
-        self.assertTrue(diff.is_compatible)
-        self.assertEqual([f[0].name for f in diff.changed_fields], ["before", "after"])
+        self.assertFalse(s_list_new_req.diff(s_list_old).is_compatible)
 
     def test_strict_model_validation_raises(self) -> None:
         with self.assertRaises(ValueError):
@@ -342,7 +597,7 @@ class TestSchemaModels(unittest.TestCase):
                 ]
             ),
         )
-        # Promoting nested null -> string and adding nested field "c" is compatible
+        # Promoting nested null -> string and adding nullable nested field "c" is compatible
         s_compat = TableSchema(
             destination="t1",
             arrow_schema=pa.schema(
@@ -411,13 +666,30 @@ class TestSchemaModels(unittest.TestCase):
         self.assertFalse(diff_tighten.is_compatible)
         self.assertEqual(len(diff_tighten.changed_fields), 1)
 
-        # Destination normalization & tombstone / kind invariants (SCH-10)
+        # Destination normalization & tombstone / kind invariants
         trimmed = ChangeRecord(destination="  orders  ", value={"id": 1}, key={"id": 1})
         self.assertEqual(trimmed.destination, "orders")
         with self.assertRaises(ValueError):
-            ChangeRecord(destination="orders", value=None, key=None)
+            ChangeRecord(
+                destination="orders",
+                value=None,
+                key=None,
+                kind=EventKind.TOMBSTONE,
+            )
         with self.assertRaises(ValueError):
-            ChangeRecord(destination="orders", value=None, key={})
+            ChangeRecord(
+                destination="orders",
+                value=None,
+                key={},
+                kind=EventKind.TOMBSTONE,
+            )
+        with self.assertRaises(ValueError):
+            ChangeRecord(
+                destination="orders",
+                value={"id": 1},
+                key={"id": 1},
+                kind=EventKind.TOMBSTONE,
+            )
         with self.assertRaises(ValueError):
             ChangeRecord(
                 destination="__debezium-heartbeat.srv",
@@ -434,7 +706,9 @@ class TestSchemaModels(unittest.TestCase):
             )
 
         # TableBatch enforces DATA records and matching destination
-        ts_rec = ChangeRecord(destination="t1", value=None, key={"id": 1})
+        ts_rec = ChangeRecord(
+            destination="t1", value=None, key={"id": 1}, kind=EventKind.TOMBSTONE
+        )
         with self.assertRaises(ValueError):
             TableBatch(schema=s_non_null, records=(ts_rec,))
         wrong_dest = ChangeRecord(
@@ -443,16 +717,16 @@ class TestSchemaModels(unittest.TestCase):
         with self.assertRaises(ValueError):
             TableBatch(schema=s_non_null, records=(wrong_dest,))
 
-        # SchemaDiff detects column reordering and primary_keys changes
+        # SchemaDiff detects column reordering and key_fields changes
         s_ab = TableSchema(
             destination="t1",
             arrow_schema=pa.schema([("a", pa.int32()), ("b", pa.string())]),
-            primary_keys=("a",),
+            key_fields=("a",),
         )
         s_ba = TableSchema(
             destination="t1",
             arrow_schema=pa.schema([("b", pa.string()), ("a", pa.int32())]),
-            primary_keys=("a",),
+            key_fields=("a",),
         )
         diff_reorder = s_ba.diff(s_ab)
         self.assertTrue(diff_reorder.reordered)
@@ -463,10 +737,10 @@ class TestSchemaModels(unittest.TestCase):
         s_pk_changed = TableSchema(
             destination="t1",
             arrow_schema=pa.schema([("a", pa.int32()), ("b", pa.string())]),
-            primary_keys=("a", "b"),
+            key_fields=("a", "b"),
         )
         diff_pk = s_pk_changed.diff(s_ab)
-        self.assertTrue(diff_pk.primary_keys_changed)
+        self.assertTrue(diff_pk.key_fields_changed)
         self.assertTrue(diff_pk.has_changes)
         self.assertFalse(diff_pk.is_additive)
         self.assertFalse(diff_pk.is_compatible)
@@ -477,7 +751,7 @@ class TestSchemaModels(unittest.TestCase):
         s = TableSchema(
             destination="orders",
             arrow_schema=pa.schema([("id", pa.int32()), ("name", pa.string())]),
-            primary_keys=("id",),
+            key_fields=("id",),
         )
         r_alice = ChangeRecord(
             destination="orders",
@@ -485,7 +759,12 @@ class TestSchemaModels(unittest.TestCase):
             value={"id": 1, "name": "Alice"},
             key={"id": 1},
         )
-        ts_1 = ChangeRecord(destination="orders", value=None, key={"id": 1})
+        ts_1 = ChangeRecord(
+            destination="orders",
+            value=None,
+            key={"id": 1},
+            kind=EventKind.TOMBSTONE,
+        )
         r_bob = ChangeRecord(
             destination="orders",
             schema=s,

@@ -14,7 +14,7 @@ from pydbzengine.schema.models import (
     TableBatch,
     TableSchema,
 )
-from pydbzengine.schema.types import TypeRegistry
+from pydbzengine.schema.registry import TypeRegistry
 
 __all__ = [
     "SchemaAwareChangeHandler",
