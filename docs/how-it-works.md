@@ -15,8 +15,8 @@
 3.  **Event Capture**: The Java Debezium Engine reads change events from the source database transaction log.
 4.  **Batch Dispatch**: The JPype consumer forwards each batch of `ChangeEvent` records to the Python handler (`handle_batch` / `handleJsonBatch`).
 5.  **Schema Conversion & Sink Processing**:
-    - If using [`SchemaAwareChangeHandler`](schema/consumer.md), `EventConverter` compiles the event schemas into `TableSchema` descriptors, slices records into homogeneous `TableBatch` runs, and invokes `on_table_created`, `on_schema_evolved`, and `handle_table_batch`.
-    - If using [`BasePythonChangeHandler`](handlers/custom.md), the handler processes the `list[ChangeEvent]` batch directly.
+    - If using [`SchemaAwareChangeHandler`](schema/consumer.md) (requires schema-enabled Connect or JSON events), `EventConverter` compiles the event schemas into `TableSchema` descriptors, segments records causally into homogeneous `TableBatch` runs and lifecycle records, and invokes `on_table_created`, `on_schema_evolved`, `handle_table_batch`, `on_tombstone`, `on_schema_change`, and `on_heartbeat`.
+    - If using [`BasePythonChangeHandler`](handlers/custom.md) (including schemaless JSON pipelines), the handler processes the `list[ChangeEvent]` batch directly.
 
 ---
 

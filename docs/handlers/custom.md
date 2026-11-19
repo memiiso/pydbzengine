@@ -2,8 +2,8 @@
 
 `pydbzengine` provides two base classes for implementing custom consumers:
 
-1. **[`SchemaAwareChangeHandler`](../schema/consumer.md)**: Converts raw JSON or Connect events into typed Python dictionaries and `pyarrow.Table` batches, tracks active schemas per destination, and dispatches `on_table_created`, `on_schema_evolved`, and `handle_table_batch`. See [Schema-Aware Consumer & Examples](../schema/consumer.md) for PyArrow and Snowflake implementations.
-2. **`BasePythonChangeHandler`**: Low-level callback class that receives the raw `list[ChangeEvent]` batch directly from the JPype bridge without schema compilation or type conversion.
+1. **[`SchemaAwareChangeHandler`](../schema/consumer.md)**: Converts schema-enabled Connect or JSON (`schemas_enabled=True`) events into typed Python dictionaries and `pyarrow.Table` batches, tracks active schemas per destination, and dispatches `on_table_created`, `on_schema_evolved`, `handle_table_batch`, `on_tombstone`, `on_schema_change`, and `on_heartbeat`. See [Schema-Aware Consumer & Examples](../schema/consumer.md) for PyArrow and Snowflake implementations.
+2. **`BasePythonChangeHandler`**: Low-level callback class that receives the raw `list[ChangeEvent]` batch directly from the JPype bridge without schema compilation or type conversion. Use this base class when consuming raw schemaless JSON payloads (`converter.schemas.enable=false`).
 
 ## Implementing `BasePythonChangeHandler`
 

@@ -14,8 +14,9 @@
 
 ## Verification & Testing
 
-1.  **Lint and Type Check**:
+1.  **Format, Lint, and Type Check**:
     ```shell
+    ruff format --check .
     ruff check .
     mypy pydbzengine
     ```

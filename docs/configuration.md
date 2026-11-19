@@ -21,8 +21,8 @@ Every `DebeziumEngine` instance requires basic identification and offset storage
 ## Engine Wire Formats
 
 `DebeziumEngine` supports two record wire formats:
-- **`"json"`** (*default*): Events are serialized as JSON strings.
-- **`"connect"`**: Events are passed as in-memory Java Kafka Connect `SourceRecord` objects.
+- **`"json"`** (*default*): Events are serialized as JSON strings. Schemas are enabled by default (`converter.schemas.enable=true`), which is required by [`SchemaAwareChangeHandler`](schema/consumer.md). Set `converter.schemas.enable=false` only when consuming raw schemaless JSON with [`BasePythonChangeHandler`](handlers/custom.md) (or built-in handlers such as `DltChangeHandler`).
+- **`"connect"`**: Events are passed as in-memory Java Kafka Connect `SourceRecord` objects (always schema-enabled).
 
 ```python
 from pydbzengine import DebeziumEngine
@@ -67,8 +67,8 @@ dbz_properties = {
 
 By default, Debezium wraps change events in an envelope structure containing `before`, `after`, `op`, `source`, and timestamp metadata.
 
-- When using [`SchemaAwareChangeHandler`](schema/consumer.md), `schema.row_schema` and `batch.to_arrow(extract_rows=True)` extract the unpacked table row directly from standard Debezium envelopes without requiring an SMT.
-- When using `IcebergChangeHandlerV2` or `DltChangeHandler` with flat payloads, configure Debezium's `ExtractNewRecordState` transform:
+- [`SchemaAwareChangeHandler`](schema/consumer.md) compiles whatever top-level struct Debezium emits: without an SMT, `schema.arrow_schema` and `batch.to_arrow()` mirror the full envelope (`before`/`after` as nested structs).
+- When you want flat table columns directly (for [`SchemaAwareChangeHandler`](schema/consumer.md) warehouse sinks, `IcebergChangeHandlerV2`, or `DltChangeHandler`), configure Debezium's `ExtractNewRecordState` transform:
 
 ```python
 dbz_properties.update(

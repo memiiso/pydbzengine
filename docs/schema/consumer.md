@@ -1,17 +1,25 @@
 # Schema-Aware Consumer & Examples
 
-`SchemaAwareChangeHandler` (`pydbzengine.schema.handler`) is the base class for schema-driven CDC consumers. It converts incoming `ChangeEvent` batches via `EventConverter`, tracks the active `TableSchema` per destination, and dispatches lifecycle hooks.
+`SchemaAwareChangeHandler` (`pydbzengine.schema.handler`, re-exported from `pydbzengine.schema`) is the base class for schema-driven CDC consumers. It converts incoming `ChangeEvent` batches via `EventConverter`, tracks the active `TableSchema` per destination, and dispatches causally ordered lifecycle hooks.
 
 ## Lifecycle Hooks & Dispatch Sequence
 
-When `DebeziumEngine` passes a batch of `ChangeEvent` records to `SchemaAwareChangeHandler.handle_batch()`, the handler converts the batch into a `ChangeBatch`, slices data records into homogeneous `TableBatch` runs via `batch.table_batches()`, and invokes:
+When `DebeziumEngine` passes a batch of `ChangeEvent` records to `SchemaAwareChangeHandler.handle_batch()`, the handler converts the batch into a `ChangeBatch`, iterates `batch.destination_events()` in causal order, and invokes:
 
 1. **`on_table_created(self, schema: TableSchema) -> None`**
    Called the first time a `TableSchema` is observed for a destination.
 2. **`on_schema_evolved(self, new_schema: TableSchema, old_schema: TableSchema, diff: SchemaDiff) -> None`**
-   Called whenever a destination's `TableSchema` differs from its previously tracked version, passing the computed `SchemaDiff`.
+   Called whenever a destination's `TableSchema` differs from its previously tracked version (`diff.has_changes`), passing the computed `SchemaDiff`.
 3. **`handle_table_batch(self, batch: TableBatch) -> None`**
    Called for each homogeneous `TableBatch` after `on_table_created` or `on_schema_evolved` has completed.
+4. **`on_tombstone(self, record: ChangeRecord) -> None`**
+   Called for each delete tombstone (`EventKind.TOMBSTONE`) at its causal position between `TableBatch` runs for that destination.
+5. **`on_schema_change(self, record: ChangeRecord) -> None`**
+   Called for each DDL schema-change event (`EventKind.SCHEMA_CHANGE`) after flushing all open destination runs.
+6. **`on_heartbeat(self, record: ChangeRecord) -> None`**
+   Called for each heartbeat event (`EventKind.HEARTBEAT`).
+
+You can inspect currently tracked schemas at any time via `self.schemas` (returns a copy of `dict[str, TableSchema]`) or `self.get_schema(destination)`. Pass `default_variable_scale` to `super().__init__(default_variable_scale=...)` if you need a custom scale for `VariableScaleDecimal` fields (defaults to `10`).
 
 ```mermaid
 sequenceDiagram
@@ -24,17 +32,17 @@ sequenceDiagram
     Note over Engine,Sink: Batch 1: Initial Records (v1 Schema: id, amount)
     Engine->>Handler: handle_batch([event_1, event_2])
     Handler->>Conv: converter.convert(records)
-    Conv-->>Handler: ChangeBatch -> [TableBatch(dest="public.orders", schema=v1)]
+    Conv-->>Handler: ChangeBatch -> destination_events() = [TableBatch(dest="public.orders", schema=v1)]
     Handler->>Sink: on_table_created(schema=v1)
     Sink-->>Handler: CREATE TABLE orders (id INT, amount DECIMAL(10,2))
     Handler->>Sink: handle_table_batch(TableBatch[v1])
-    Sink-->>Handler: Load 2 rows via batch.to_arrow(extract_rows=True)
+    Sink-->>Handler: Load 2 rows via batch.to_arrow()
 
     Note over Engine,Sink: Batch 2: Upstream ALTER TABLE ADD COLUMN status VARCHAR
     Engine->>Handler: handle_batch([event_3_v1, event_4_v2])
     Handler->>Conv: converter.convert(records)
     Note right of Conv: Intra-batch evolution sliced into 2 homogeneous TableBatches
-    Conv-->>Handler: ChangeBatch -> [TableBatch(v1), TableBatch(v2)]
+    Conv-->>Handler: ChangeBatch -> destination_events() = [TableBatch(v1), TableBatch(v2)]
 
     Handler->>Sink: handle_table_batch(TableBatch[v1])
     Sink-->>Handler: Load event_3 (v1 schema)
@@ -48,9 +56,9 @@ sequenceDiagram
 
 ---
 
-## PyArrow Consumer Example
+## PyArrow Consumer Example (Default Debezium Envelope)
 
-This consumer logs table creation and schema evolution events and materializes each batch into an unpacked `pyarrow.Table`:
+Without an unwrapping SMT, Debezium emits standard CDC envelopes (`before`, `after`, `source`, `op`, `ts_ms`). `TableSchema.arrow_schema` compiles the envelope directly, and `SchemaDiff.is_additive` detects nullable column additions inside the nested `before`/`after` structs:
 
 ```python
 from pydbzengine import DebeziumEngine
@@ -64,11 +72,11 @@ from pydbzengine.schema import (
 
 class ArrowBatchHandler(SchemaAwareChangeHandler):
     def on_table_created(self, schema: TableSchema) -> None:
-        self.log.info(
-            "Table created: %s (primary_keys=%s, fields=%s)",
+        self.logger.info(
+            "Table created: %s (key_fields=%s, columns=%s)",
             schema.destination,
-            schema.primary_keys,
-            schema.row_schema.names,
+            schema.key_fields,
+            schema.arrow_schema.names,
         )
 
     def on_schema_evolved(
@@ -77,17 +85,19 @@ class ArrowBatchHandler(SchemaAwareChangeHandler):
         old_schema: TableSchema,
         diff: SchemaDiff,
     ) -> None:
-        self.log.info(
-            "Schema evolved for %s: compatible=%s, added=%s",
+        self.logger.info(
+            "Schema evolved for %s: additive=%s, compatible=%s, added=%s, changed=%s",
             new_schema.destination,
+            diff.is_additive,
             diff.is_compatible,
             [f.name for f in diff.added_fields],
+            [old_f.name for old_f, _ in diff.changed_fields],
         )
 
     def handle_table_batch(self, batch: TableBatch) -> None:
-        arrow_table = batch.to_arrow(extract_rows=True)
-        self.log.info(
-            "Consumed %d rows for %s (columns=%s)",
+        arrow_table = batch.to_arrow()
+        self.logger.info(
+            "Consumed %d records for %s (columns=%s)",
             arrow_table.num_rows,
             batch.destination,
             arrow_table.column_names,
@@ -115,14 +125,14 @@ if __name__ == "__main__":
 
 ---
 
-## Custom Snowflake CDC Consumer Example
+## Custom Snowflake CDC Consumer Example (`ExtractNewRecordState`)
 
-The `SnowflakeChangeHandler` below demonstrates how to build a custom database sink using `SchemaAwareChangeHandler`:
+When loading into a relational warehouse or lakehouse table, configure Debezium's `ExtractNewRecordState` SMT (`transforms.unwrap.type = io.debezium.transforms.ExtractNewRecordState`) with `add.fields = op` and `delete.tombstone.handling.mode = rewrite`. Debezium then emits flat table rows with `__op` and `__deleted` metadata columns so `schema.arrow_schema` maps directly to table columns:
 
-- **`arrow_type_to_snowflake_sql`**: Maps `schema.row_schema` field types to Snowflake DDL types.
-- **`on_table_created`**: Executes `CREATE TABLE IF NOT EXISTS` with primary key constraints.
-- **`on_schema_evolved`**: Verifies `diff.is_compatible` and executes `ALTER TABLE ... ADD COLUMN` for `diff.added_fields`.
-- **`handle_table_batch`**: Appends keyless tables directly from `batch.to_arrow(extract_rows=True)`, or stages keyed CDC records with their operation code (`__CDC_OP`) and executes an atomic `MERGE INTO` statement applying inserts, updates, and deletes.
+- **`arrow_type_to_snowflake_sql`**: Maps `schema.arrow_schema` field types to Snowflake DDL types.
+- **`on_table_created`**: Executes `CREATE TABLE IF NOT EXISTS` using `schema.arrow_schema` (excluding `__`-prefixed SMT metadata columns) and `schema.key_fields` for `PRIMARY KEY` constraints.
+- **`on_schema_evolved`**: Verifies `diff.is_compatible` and executes `ALTER TABLE ... ADD COLUMN` for newly added data columns in `diff.added_fields`.
+- **`handle_table_batch`**: Appends keyless tables directly via `batch.to_arrow(target_schema=data_schema)`, or stages keyed CDC records with an explicit `__CDC_OP` marker (`"D"` for deletes, `"U"` for inserts/updates) and executes an atomic `MERGE INTO`.
 
 ```python
 from __future__ import annotations
@@ -133,7 +143,6 @@ import pyarrow as pa
 
 from pydbzengine import DebeziumEngine
 from pydbzengine.schema import (
-    ChangeOp,
     SchemaAwareChangeHandler,
     SchemaDiff,
     TableBatch,
@@ -165,6 +174,12 @@ def arrow_type_to_snowflake_sql(dtype: pa.DataType) -> str:
     raise ValueError(f"Unsupported PyArrow type for Snowflake DDL: {dtype}")
 
 
+def data_arrow_schema(schema: TableSchema) -> pa.Schema:
+    return pa.schema(
+        [field for field in schema.arrow_schema if not field.name.startswith("__")]
+    )
+
+
 class SnowflakeChangeHandler(SchemaAwareChangeHandler):
     def __init__(
         self,
@@ -179,17 +194,17 @@ class SnowflakeChangeHandler(SchemaAwareChangeHandler):
         table_fqn = f'"{self.target_schema}"."{schema.table_name.upper()}"'
         col_defs: list[str] = []
 
-        for field in schema.row_schema:
+        for field in data_arrow_schema(schema):
             sf_type = arrow_type_to_snowflake_sql(field.type)
             null_clause = "" if field.nullable else " NOT NULL"
             col_defs.append(f'"{field.name.upper()}" {sf_type}{null_clause}')
 
-        if schema.primary_keys:
-            pk_cols = ", ".join(f'"{pk.upper()}"' for pk in schema.primary_keys)
+        if schema.key_fields:
+            pk_cols = ", ".join(f'"{pk.upper()}"' for pk in schema.key_fields)
             col_defs.append(f"PRIMARY KEY ({pk_cols})")
 
         ddl = f"CREATE TABLE IF NOT EXISTS {table_fqn} ({', '.join(col_defs)})"
-        self.log.info("Executing DDL: %s", ddl)
+        self.logger.info("Executing DDL: %s", ddl)
         with self.conn.cursor() as cur:
             cur.execute(ddl)
 
@@ -206,16 +221,19 @@ class SnowflakeChangeHandler(SchemaAwareChangeHandler):
                 f"changed={[(o.name, o.type, n.type) for o, n in diff.changed_fields]}"
             )
 
-        if not diff.added_fields:
+        added_data_fields = [
+            f for f in diff.added_fields if not f.name.startswith("__")
+        ]
+        if not added_data_fields:
             return
 
         table_fqn = f'"{self.target_schema}"."{new_schema.table_name.upper()}"'
         add_clauses = [
             f'"{field.name.upper()}" {arrow_type_to_snowflake_sql(field.type)}'
-            for field in diff.added_fields
+            for field in added_data_fields
         ]
         alter_sql = f"ALTER TABLE {table_fqn} ADD COLUMN {', '.join(add_clauses)}"
-        self.log.info("Executing DDL: %s", alter_sql)
+        self.logger.info("Executing DDL: %s", alter_sql)
         with self.conn.cursor() as cur:
             cur.execute(alter_sql)
 
@@ -223,11 +241,12 @@ class SnowflakeChangeHandler(SchemaAwareChangeHandler):
         from snowflake.connector.pandas_tools import write_pandas
 
         schema = batch.schema
+        data_schema = data_arrow_schema(schema)
         target_table = schema.table_name.upper()
         table_fqn = f'"{self.target_schema}"."{target_table}"'
 
-        if not schema.primary_keys:
-            df = batch.to_arrow(extract_rows=True).to_pandas()
+        if not schema.key_fields:
+            df = batch.to_arrow(target_schema=data_schema).to_pandas()
             df.columns = [col.upper() for col in df.columns]
             write_pandas(
                 conn=self.conn,
@@ -238,22 +257,26 @@ class SnowflakeChangeHandler(SchemaAwareChangeHandler):
             )
             return
 
+        data_cols = data_schema.names
         staged_rows: list[dict[str, Any]] = []
         for record in batch:
-            if record.op is ChangeOp.TRUNCATE or record.op is ChangeOp.MESSAGE:
+            row = record.value
+            if row is None:
                 continue
-            row_data = record.data
-            if row_data is None:
+            op = row.get("__op")
+            if op in ("t", "m"):
                 continue
-            op_code = "D" if record.op is ChangeOp.DELETE else "U"
-            staged_rows.append({**row_data, "__CDC_OP": op_code})
+            is_delete = op == "d" or row.get("__deleted") == "true"
+            staged_row = {col: row.get(col) for col in data_cols}
+            staged_row["__CDC_OP"] = "D" if is_delete else "U"
+            staged_rows.append(staged_row)
 
         if not staged_rows:
             return
 
         stage_table = f"STAGE_{target_table}"
         stage_fqn = f'"{self.target_schema}"."{stage_table}"'
-        stage_schema = schema.row_schema.append(pa.field("__CDC_OP", pa.string()))
+        stage_schema = data_schema.append(pa.field("__CDC_OP", pa.string()))
         stage_df = pa.Table.from_pylist(staged_rows, schema=stage_schema).to_pandas()
         stage_df.columns = [col.upper() for col in stage_df.columns]
 
@@ -275,9 +298,9 @@ class SnowflakeChangeHandler(SchemaAwareChangeHandler):
         )
 
         join_cond = " AND ".join(
-            f't."{pk.upper()}" = s."{pk.upper()}"' for pk in schema.primary_keys
+            f't."{pk.upper()}" = s."{pk.upper()}"' for pk in schema.key_fields
         )
-        col_names = [f.name.upper() for f in schema.row_schema]
+        col_names = [f.name.upper() for f in data_schema]
         update_set = ", ".join(f't."{c}" = s."{c}"' for c in col_names)
         insert_cols = ", ".join(f'"{c}"' for c in col_names)
         insert_vals = ", ".join(f's."{c}"' for c in col_names)
@@ -318,6 +341,10 @@ if __name__ == "__main__":
         "table.include.list": "public.customers,public.orders",
         "offset.storage": "org.apache.kafka.connect.storage.FileOffsetBackingStore",
         "offset.storage.file.filename": "/tmp/snowflake_offsets.dat",
+        "transforms": "unwrap",
+        "transforms.unwrap.type": "io.debezium.transforms.ExtractNewRecordState",
+        "transforms.unwrap.add.fields": "op",
+        "transforms.unwrap.delete.tombstone.handling.mode": "rewrite",
     }
 
     handler = SnowflakeChangeHandler(
@@ -330,43 +357,59 @@ if __name__ == "__main__":
 
 ---
 
-## Tombstones, Heartbeats & Standalone Conversion
+## Lifecycle Events, Schema Alignment & Standalone Conversion
 
-### Handling Tombstones and Heartbeats
-`SchemaAwareChangeHandler.handle_change_batch` dispatches `EventKind.DATA` batches to `handle_table_batch`. To process delete tombstones (`EventKind.TOMBSTONE`) or heartbeats (`EventKind.HEARTBEAT`), override `handle_change_batch`:
+### Handling Tombstones, DDL Events, and Heartbeats
+`SchemaAwareChangeHandler` exposes dedicated hooks for non-data lifecycle events, invoked in causal order alongside `handle_table_batch`:
 
 ```python
 from pydbzengine.schema import (
-    ChangeBatch,
-    EventKind,
+    ChangeRecord,
     SchemaAwareChangeHandler,
+    TableBatch,
 )
 
 
-class TombstoneAwareHandler(SchemaAwareChangeHandler):
-    def handle_change_batch(self, batch: ChangeBatch) -> None:
-        super().handle_change_batch(batch)
+class LifecycleAwareHandler(SchemaAwareChangeHandler):
+    def handle_table_batch(self, batch: TableBatch) -> None:
+        table = batch.to_arrow()
+        self.logger.info("Batch for %s: %d rows", batch.destination, table.num_rows)
 
-        for tombstone in batch.of_kind(EventKind.TOMBSTONE):
-            self.log.info(
-                "Tombstone on %s: key=%s",
-                tombstone.destination,
-                tombstone.key,
-            )
+    def on_tombstone(self, record: ChangeRecord) -> None:
+        self.logger.info("Tombstone on %s: key=%s", record.destination, record.key)
 
-        for hb in batch.of_kind(EventKind.HEARTBEAT):
-            self.log.debug("Heartbeat on %s: %s", hb.destination, hb.value)
+    def on_schema_change(self, record: ChangeRecord) -> None:
+        ddl = record.value.get("ddl") if record.value is not None else None
+        self.logger.info("DDL event on %s: %s", record.destination, ddl)
+
+    def on_heartbeat(self, record: ChangeRecord) -> None:
+        self.logger.debug("Heartbeat on %s: %s", record.destination, record.value)
 ```
+
+### Aligning Batches to an Evolved `target_schema`
+When writing heterogeneous historical batches into a single target table schema (including nested `before`/`after` envelope structs on `pyarrow>=19.0.0`), pass `target_schema` to `TableBatch.to_arrow()`:
+
+```python
+aligned_table = table_batch.to_arrow(target_schema=latest_table_schema.arrow_schema)
+```
+
+`to_arrow(target_schema=...)` projects and reorders columns, casts widened types (including temporal units and nested struct fields), fills missing nullable columns with nulls, and enforces target nullability constraints recursively.
 
 ### Standalone `EventConverter` Usage
 `EventConverter` can also be used directly without subclassing `SchemaAwareChangeHandler`:
 
 ```python
-from pydbzengine.schema import JsonEventConverter
+from pydbzengine import DebeziumConfig
+from pydbzengine.schema import EventConverter, JsonEventConverter
 
+# Direct instantiation for schema-enabled JSON records
 converter = JsonEventConverter()
 change_batch = converter.convert(raw_events)
 
 for table_batch in change_batch.table_batches():
-    arrow_table = table_batch.to_arrow(extract_rows=True)
+    arrow_table = table_batch.to_arrow()
+
+# Or resolve deterministically from DebeziumConfig (CONNECT or JSON with schemas_enabled=True)
+config = DebeziumConfig(properties=dbz_props, format="connect")
+config_converter = EventConverter.from_config(config)
 ```
