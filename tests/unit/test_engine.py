@@ -4,6 +4,7 @@ from pydbzengine import (
     BasePythonChangeHandler,
     DebeziumEngine,
     DebeziumJsonEngine,
+    EventFormat,
     RecordCommitter,
 )
 
@@ -106,20 +107,19 @@ class TestDebeziumEngine(unittest.TestCase):
         )
         self.assertEqual(e_conn_upper._resolve_format(), EngineFormat.CONNECT)
 
-        # Explicit EngineFormat enum
+        # Explicit EventFormat enum
         e_direct = DebeziumEngine(
-            properties={"name": "test"}, handler=handler, format=EngineFormat.CONNECT
+            properties={"name": "test"}, handler=handler, format=EventFormat.CONNECT
         )
         self.assertEqual(e_direct._resolve_format(), EngineFormat.CONNECT)
 
     def test_format_resolution_invalid_format_raises_error(self) -> None:
-        e_invalid = DebeziumEngine(
-            properties={"name": "test"},
-            handler=DummyHandler(),
-            format="unsupported_format",
-        )
         with self.assertRaisesRegex(ValueError, "Unsupported format"):
-            e_invalid._resolve_format()
+            DebeziumEngine(
+                properties={"name": "test"},
+                handler=DummyHandler(),
+                format="unsupported_format",
+            )
 
     def test_context_manager_lifecycle(self) -> None:
         class MockEngineInternal:
@@ -145,7 +145,7 @@ class TestDebeziumJsonEngine(unittest.TestCase):
 
         engine = DebeziumJsonEngine(properties={"name": "test"}, handler=DummyHandler())
         self.assertIsInstance(engine, DebeziumEngine)
-        self.assertEqual(engine.format, "json")
+        self.assertEqual(engine.config.format, "json")
         self.assertEqual(engine._resolve_format(), EngineFormat.JSON)
 
     def test_subclass_validation_missing_properties_raises_error(self) -> None:

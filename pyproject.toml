@@ -33,15 +33,12 @@ classifiers = [
 ]
 dependencies = [
     "jpype1>=1.6.0",
+    "pyarrow>=19.0.0",
 ]
 
 [project.optional-dependencies]
-arrow = [
-    "pyarrow",
-]
 iceberg = [
     "pyiceberg[pyiceberg-core]>=0.12.0",
-    "pyarrow",
 ]
 dlt = [
     "dlt>=1.5.0",
@@ -81,6 +78,9 @@ fallback_version = "0.1.0"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
+markers = [
+    "integration: End-to-end integration tests using real PostgreSQL and Debezium containers",
+]
 
 [tool.ruff]
 line-length = 88
