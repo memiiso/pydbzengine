@@ -37,11 +37,11 @@ dependencies = [
 
 [project.optional-dependencies]
 arrow = [
-    "pyarrow",
+    "pyarrow>=19.0.0",
 ]
 iceberg = [
     "pyiceberg[pyiceberg-core]>=0.12.0",
-    "pyarrow",
+    "pyarrow>=19.0.0",
 ]
 dlt = [
     "dlt>=1.5.0",
@@ -50,6 +50,7 @@ airflow = [
     "apache-airflow>=2.10.4",
 ]
 dev = [
+    "pyarrow>=19.0.0",
     "testcontainers[minio]>=4.13.3",
     "dlt[duckdb]>=1.5.0",
     "apache-airflow>=2.10.4",
@@ -81,6 +82,9 @@ fallback_version = "0.1.0"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
+markers = [
+    "integration: End-to-end integration tests using real PostgreSQL and Debezium containers",
+]
 
 [tool.ruff]
 line-length = 88

@@ -2,9 +2,44 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from collections.abc import Sequence
-from typing import Any, Protocol, runtime_checkable
+from enum import Enum
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from pydbzengine.logger import LoggingMixin
+
+if TYPE_CHECKING:
+    from pydbzengine.engine.config import DebeziumConfig
+
+
+class EventFormat(str, Enum):
+    """Wire serialization format produced by the Debezium engine."""
+
+    JSON = "json"
+    CONNECT = "connect"
+
+    @classmethod
+    def resolve_from(cls, format: str | EventFormat) -> EventFormat:
+        """Resolves an EventFormat from a string or enum value."""
+        if isinstance(format, cls):
+            return format
+        if not isinstance(format, str):
+            raise TypeError(
+                f"Expected EventFormat or str for format, got {type(format).__name__}: {format!r}"
+            )
+        fmt_str = format.strip().lower()
+        if fmt_str in (
+            "json",
+            "io.debezium.engine.format.json",
+            "org.apache.kafka.connect.json.jsonconverter",
+        ):
+            return cls.JSON
+        if fmt_str in (
+            "connect",
+            "io.debezium.embedded.connect",
+            "org.apache.kafka.connect.storage.connectconverter",
+        ):
+            return cls.CONNECT
+        raise ValueError(f"Unsupported format: {format!r}")
 
 
 class RecordCommitter(ABC):
@@ -63,6 +98,13 @@ class BasePythonChangeHandler(ABC, LoggingMixin):
         `handleJsonBatch` intentionally uses camelCase to match the Java callback
         contract expected by `PythonChangeConsumer` (DebeziumEngine$ChangeConsumer).
     """
+
+    def configure(self, config: DebeziumConfig) -> None:
+        """
+        Lifecycle hook invoked by DebeziumEngine to bind the engine configuration
+        into the handler.
+        """
+        pass
 
     def handleJsonBatch(self, records: list[ChangeEvent]) -> None:
         """
