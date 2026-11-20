@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import base64
 import datetime
 import unittest
 from decimal import Decimal
@@ -14,12 +13,6 @@ from pydbzengine.schema import (
     SchemaDiff,
     TableBatch,
     TableSchema,
-)
-from pydbzengine.schema.handlers import (
-    DecimalTypeHandler,
-    IntTypeHandler,
-    SchemaField,
-    StructTypeHandler,
 )
 
 
@@ -234,26 +227,22 @@ class TestSchemaModels(unittest.TestCase):
             )
 
     def test_table_batch_to_arrow(self) -> None:
-        val_handler = StructTypeHandler(
-            (
-                SchemaField("id", IntTypeHandler(pa.int32())),
-                SchemaField("price", DecimalTypeHandler(precision=10, scale=2)),
-            )
+        pa_schema = pa.schema(
+            [
+                pa.field("id", pa.int32()),
+                pa.field("price", pa.decimal128(10, 2)),
+            ]
         )
         schema = TableSchema(
             destination="inventory.orders",
-            arrow_schema=val_handler.arrow_schema,
+            arrow_schema=pa_schema,
             key_fields=("id",),
         )
-        self.assertEqual(schema.arrow_schema, val_handler.arrow_schema)
-        price_b64 = base64.b64encode((1999).to_bytes(2, "big", signed=True)).decode(
-            "ascii"
-        )
-        row = val_handler.convert_json({"id": 1, "price": price_b64})
+        self.assertEqual(schema.arrow_schema, pa_schema)
         rec = ChangeRecord(
             destination="inventory.orders",
             schema=schema,
-            value=row,
+            value={"id": 1, "price": Decimal("19.99")},
             key={"id": 1},
         )
         tb = TableBatch(schema=schema, records=(rec,))
@@ -263,6 +252,9 @@ class TestSchemaModels(unittest.TestCase):
 
         tbl = tb.to_arrow()
         self.assertEqual(tbl.num_rows, 1)
+        # Arrow PyCapsule Interface (__arrow_c_stream__)
+        via_capsule = pa.table(tb)
+        self.assertEqual(via_capsule, tbl)
         self.assertEqual(tbl.to_pylist(), [{"id": 1, "price": Decimal("19.99")}])
 
     def test_table_batch_to_arrow_enforces_target_schema_nullability(self) -> None:

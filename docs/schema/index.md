@@ -4,8 +4,8 @@ The `pydbzengine.schema` package compiles schema-enabled Debezium `ChangeEvent` 
 
 Downstream consumers that extend `SchemaAwareChangeHandler` receive compiled `TableSchema` descriptors, structural `SchemaDiff` objects, homogeneous `TableBatch` runs, and ordered lifecycle events rather than raw JSON strings or Java Kafka Connect `SourceRecord` objects.
 
-!!! note "Schema-Enabled Requirement"
-    `pydbzengine.schema` strictly requires schema-enabled events: either `EventFormat.CONNECT` (`format="connect"`) or `EventFormat.JSON` (`format="json"`) with `schemas_enabled=True` (`converter.schemas.enable=true`, the default). Passing schemaless JSON (`schemas_enabled=False`) fails fast with a `ValueError`. If you consume schemaless JSON payloads, subclass [`BasePythonChangeHandler`](../handlers/custom.md) directly.
+!!! note "Installation & Schema-Enabled Requirement"
+    `pydbzengine.schema` requires the optional Arrow extra (`pip install pydbzengine[arrow]`) and schema-enabled events: either `EventFormat.CONNECT` (`format="connect"`) or `EventFormat.JSON` (`format="json"`) with `schemas_enabled=True` (`converter.schemas.enable=true`, the default). Passing schemaless JSON (`schemas_enabled=False`) fails fast with a `ValueError`. If you consume schemaless JSON payloads, subclass [`BasePythonChangeHandler`](../handlers/custom.md) directly.
 
 ## Raw vs. Schema-Aware Consumption
 
@@ -31,12 +31,14 @@ Consumer code should import from the top-level `pydbzengine.schema` package, whi
 | **Converters & Formats** | `EventConverter`, `ConnectEventConverter`, `JsonEventConverter`, `EventFormat` |
 | **Consumer Base Class** | `SchemaAwareChangeHandler` |
 
-Compiler internals are separated into focused submodules under `pydbzengine.schema`:
+Internal modules are cleanly separated by responsibility and wire format under `pydbzengine.schema`:
 
-- `pydbzengine.schema.spec`: `FieldSpec` — normalized immutable schema AST parsed from Java Connect or JSON schemas.
-- `pydbzengine.schema.handlers`: `DataTypeHandler`, `SchemaField`, and scalar, decimal, binary, and nested (`Struct`, `Array`, `Map`) handlers.
-- `pydbzengine.schema.temporal`: `DateTypeHandler`, `TimeTypeHandler`, `TimestampTypeHandler`, and `TimeUnit`.
-- `pydbzengine.schema.registry`: `TypeRegistry` — compiles `FieldSpec` trees into bound `DataTypeHandler` and `SchemaField` instances.
+- `pydbzengine.schema.models`: Pure Arrow domain models (`EventKind`, `TableSchema`, `SchemaDiff`, `ChangeRecord`, `TableBatch` with Arrow PyCapsule `__arrow_c_stream__`, `ChangeBatch`).
+- `pydbzengine.schema.types`: Shared Arrow type resolution and pure-Python value normalizers (decimals, ISO temporals, bounds) with zero JSON or JVM dependencies.
+- `pydbzengine.schema.converter`: Abstract `EventConverter` base class owning one-pass schema compilation, caching, key resolution, and `ChangeBatch` assembly.
+- `pydbzengine.schema.connect`: `ConnectEventConverter` and Connect-only Java schema/value decoders.
+- `pydbzengine.schema.json`: `JsonEventConverter` and JSON-only envelope/schema/value decoders.
+- `pydbzengine.schema.consumer`: `SchemaAwareChangeHandler` lifecycle consumer base class.
 
 ---
 
@@ -100,20 +102,20 @@ If `format="json"` is configured with `schemas_enabled=False` (or `converter.sch
 
 ## Schema Compilation & Caching
 
-When `ConnectEventConverter` or `JsonEventConverter` encounters a destination for the first time—or observes an updated wire schema—it compiles the schema in three steps:
+When `ConnectEventConverter` or `JsonEventConverter` encounters a destination for the first time—or observes an updated wire schema—it compiles the schema in a single pass:
 
 ```mermaid
 flowchart LR
-    WIRE["Wire Schema\n(Java Connect Schema or JSON dict)"] -->|"FieldSpec.from_connect()\nFieldSpec.from_json()"| FS["FieldSpec Tree\n(Normalized Schema AST)"]
-    FS -->|"TypeRegistry.compile_struct()"| HANDLERS["StructTypeHandler Tree\n+ pyarrow.Schema"]
-    HANDLERS --> TS["TableSchema\n(Cached per Destination)"]
+    WIRE["Wire Schema\n(Java Connect Schema or JSON dict)"] -->|"Format-specific\n_inspect_schema()"| COMP["EventConverter._compile_field()\n+ Shared types.py Arrow Mapping"]
+    COMP --> DEC["Compiled pa.Schema +\nSingle-Format Value Decoders"]
+    DEC --> TS["TableSchema\n(Cached per Destination)"]
 ```
 
-1. **Normalization (`FieldSpec` in `spec.py`)**: Parses the JSON schema dictionary or Java Connect `Schema` into an immutable `FieldSpec` tree capturing `name`, `type_name`, `optional`, `logical_name`, `doc`, `parameters`, and nested child specifications (`fields`, `items`, `keys`, `values`).
-2. **Handler & Arrow Compilation (`TypeRegistry` in `registry.py`)**: Matches each `FieldSpec` against semantic logical types first, then parameterized decimals, primitives, and generic nested containers (`struct`, `array`, `map`), producing `SchemaField` objects with bound `DataTypeHandler` implementations and `pyarrow.Field` descriptors (preserving `doc` and `debezium.logical_type` in Arrow field metadata).
-3. **Destination Caching (`TableSchema` in `models.py`)**: Builds an immutable `TableSchema` (`destination`, `arrow_schema`, `key_fields`, `key_schema`) paired internally in the converter cache with the compiled `StructTypeHandler` and key handler. Subsequent events with an equal wire schema reuse the cached entry without recompiling.
+1. **Format Inspection (`connect.py` / `json.py`)**: Extracts each field's wire type, logical type name, nullability, doc, and parameters strictly for its format.
+2. **Arrow Mapping & Decoder Binding (`converter.py` + `types.py`)**: Maps Debezium/Connect primitive, temporal, decimal, and nested container types to `pyarrow.Field` descriptors (preserving `doc` and `debezium.logical_type` in Arrow metadata) and binds lightweight single-format decoder callables.
+3. **Destination Caching (`models.py`)**: Builds an immutable `TableSchema` (`destination`, `arrow_schema`, `key_fields`, `key_schema`) paired internally in the converter cache with the compiled value and key decoders. Subsequent events with an equal wire schema reuse the cached entry without recompiling.
 
 ## Next Steps
 
-- **[Domain Models & Types](models.md)**: Reference for `TableSchema`, `SchemaDiff`, `ChangeRecord`, `TableBatch`, `ChangeBatch`, and the compiled `DataTypeHandler` classes.
+- **[Domain Models & Types](models.md)**: Reference for `TableSchema`, `SchemaDiff`, `ChangeRecord`, `TableBatch`, `ChangeBatch`, and the Debezium-to-Arrow type mappings.
 - **[Schema-Aware Consumer & Examples](consumer.md)**: Lifecycle hooks on `SchemaAwareChangeHandler` and complete implementations including a custom Snowflake CDC consumer.

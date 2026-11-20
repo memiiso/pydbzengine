@@ -1,6 +1,6 @@
 # Domain Models & Data Types
 
-This page documents the public domain entities in `pydbzengine.schema.models` (re-exported from `pydbzengine.schema`) and the compiler data type handlers in `pydbzengine.schema.handlers`, `pydbzengine.schema.temporal`, and `pydbzengine.schema.registry`.
+This page documents the public domain entities in `pydbzengine.schema.models` (re-exported from `pydbzengine.schema`) and the Debezium-to-Arrow type mappings in `pydbzengine.schema.types`.
 
 ## Domain Model Relationships
 
@@ -124,28 +124,29 @@ In default Debezium envelope mode, access fields directly on `record.value` (for
   - `batch.destination -> str`: Shortcut for `batch.schema.destination`.
   - `batch.rows -> list[dict[str, Any]]`: Converted `record.value` dictionaries matching `schema.arrow_schema`.
   - `batch.to_arrow(target_schema: pa.Schema | None = None) -> pa.Table`: Materializes a `pyarrow.Table` from `batch.rows` using `schema.arrow_schema`. When `target_schema` is provided and differs from `schema.arrow_schema`, `to_arrow()` aligns/reorders top-level columns, casts existing columns via PyArrow (including temporal unit scaling and, with `pyarrow>=19.0.0`, nested struct evolution on `before`/`after` fields for nullable subfield additions, drops, and widenings preserving surviving subfield order; subfield reordering requires `pyarrow>=21.0.0`), fills missing nullable target columns with nulls, and recursively validates target nullability across top-level columns, structs, lists, and maps.
+  - `batch.__arrow_c_stream__(requested_schema=None)`: Implements the Arrow PyCapsule Interface so `TableBatch` can be passed directly into DuckDB, Polars, PyIceberg, DataFusion, or `pyarrow.table(batch)`.
 
 ---
 
-## Compiler Internals & Data Type Handlers
+## Debezium-to-Arrow Type Mappings (`pydbzengine.schema.types`)
 
-`TypeRegistry` (`pydbzengine.schema.registry`) compiles `FieldSpec` trees (`pydbzengine.schema.spec`) into `SchemaField` objects pairing field metadata (`doc`, `debezium.logical_type`) with one of 13 concrete `DataTypeHandler` classes across `pydbzengine.schema.handlers` and `pydbzengine.schema.temporal`:
+`EventConverter` resolves Debezium and Kafka Connect schemas through `pydbzengine.schema.types` into `pyarrow.Field` descriptors (preserving `doc` and `debezium.logical_type` in field metadata) and binds format-specific decoders in `connect.py` or `json.py`:
 
-| Handler Class | Module | Debezium / Connect Types & Logical Names | Target PyArrow Type (`pa.DataType`) | Python Runtime Value |
-| :--- | :--- | :--- | :--- | :--- |
-| **`BooleanTypeHandler`** | `handlers` | `boolean` | `pa.bool_()` | `bool` |
-| **`IntTypeHandler`** | `handlers` | `int8`, `int16`, `int32`, `int64` (and int-backed logical types such as `Year`, `MicroDuration`, `NanoDuration`) | `pa.int8()`, `pa.int16()`, `pa.int32()`, `pa.int64()` | `int` |
-| **`FloatTypeHandler`** | `handlers` | `float` / `float32`, `double` / `float64` | `pa.float32()`, `pa.float64()` | `float` |
-| **`StringTypeHandler`** | `handlers` | `string` (and string-backed logical types such as `Uuid`, `Json`, `Xml`, `Enum`, `EnumSet`, `Ltree`, `Interval`) | `pa.string()` | `str` |
-| **`BinaryTypeHandler`** | `handlers` | `bytes` (and `io.debezium.data.Bits`) | `pa.binary()` | `bytes` |
-| **`DecimalTypeHandler`** | `handlers` | `org.apache.kafka.connect.data.Decimal` | `pa.decimal128(precision, scale)` | `decimal.Decimal` |
-| **`VariableScaleDecimalHandler`** | `handlers` | `io.debezium.data.VariableScaleDecimal` | `pa.decimal128(precision, scale)` | `decimal.Decimal \| None` |
-| **`DateTypeHandler`** | `temporal` | `org.apache.kafka.connect.data.Date`, `io.debezium.time.Date`, `io.debezium.time.IsoDate` | `pa.date32()` | `datetime.date \| int` |
-| **`TimeTypeHandler`** | `temporal` | `org.apache.kafka.connect.data.Time`, `io.debezium.time.Time` (`ms`), `MicroTime` / `IsoTime` / `ZonedTime` (`us`), `NanoTime` (`ns`) | `pa.time32("ms")`, `pa.time64("us")`, `pa.time64("ns")` | `datetime.time \| int` |
-| **`TimestampTypeHandler`** | `temporal` | `org.apache.kafka.connect.data.Timestamp`, `io.debezium.time.Timestamp` (`ms`), `MicroTimestamp` / `IsoTimestamp` (`us`), `NanoTimestamp` (`ns`), `ZonedTimestamp` (`us`, `tz="UTC"`) | `pa.timestamp(unit, tz=None \| "UTC")` | `datetime.datetime \| int` |
-| **`StructTypeHandler`** | `handlers` | `struct` (envelopes, nested records, and struct-backed logical types such as `Geometry`, `Geography`, `Point`, `SparseDoubleVector`) | `pa.struct([...])` | `dict[str, Any]` |
-| **`ArrayTypeHandler`** | `handlers` | `array` (lists and array-backed logical types such as `FloatVector`, `DoubleVector`) | `pa.list_(item_field)` | `list[Any]` |
-| **`MapTypeHandler`** | `handlers` | `map` (maps and `io.debezium.data.Hstore`) | `pa.map_(key_field, value_field)` | `dict[Any, Any]` |
+| Category | Debezium / Connect Types & Logical Names | Target PyArrow Type (`pa.DataType`) | Python Runtime Value |
+| :--- | :--- | :--- | :--- |
+| **Boolean** | `boolean` | `pa.bool_()` | `bool` |
+| **Integers** | `int8`, `int16`, `int32`, `int64` (and int-backed logical types such as `Year`, `MicroDuration`, `NanoDuration`) | `pa.int8()`, `pa.int16()`, `pa.int32()`, `pa.int64()` | `int` |
+| **Floats** | `float` / `float32`, `double` / `float64` | `pa.float32()`, `pa.float64()` | `float` |
+| **Strings** | `string` (and string-backed logical types such as `Uuid`, `Json`, `Xml`, `Enum`, `EnumSet`, `Ltree`, `Interval`) | `pa.string()` | `str` |
+| **Binary** | `bytes` (and `io.debezium.data.Bits`) | `pa.binary()` | `bytes` |
+| **Fixed Decimal** | `org.apache.kafka.connect.data.Decimal` | `pa.decimal128(precision, scale)` | `decimal.Decimal` |
+| **Variable Decimal** | `io.debezium.data.VariableScaleDecimal` | `pa.decimal128(precision, scale)` | `decimal.Decimal \| None` |
+| **Date** | `org.apache.kafka.connect.data.Date`, `io.debezium.time.Date`, `io.debezium.time.IsoDate` | `pa.date32()` | `datetime.date \| int` |
+| **Time** | `org.apache.kafka.connect.data.Time`, `io.debezium.time.Time` (`ms`), `MicroTime` / `IsoTime` / `ZonedTime` (`us`), `NanoTime` (`ns`) | `pa.time32("ms")`, `pa.time64("us")`, `pa.time64("ns")` | `datetime.time \| int` |
+| **Timestamp** | `org.apache.kafka.connect.data.Timestamp`, `io.debezium.time.Timestamp` (`ms`), `MicroTimestamp` / `IsoTimestamp` (`us`), `NanoTimestamp` (`ns`), `ZonedTimestamp` (`us`, `tz="UTC"`) | `pa.timestamp(unit, tz=None \| "UTC")` | `datetime.datetime \| int` |
+| **Struct** | `struct` (envelopes, nested records, and struct-backed logical types such as `Geometry`, `Geography`, `Point`, `SparseDoubleVector`) | `pa.struct([...])` | `dict[str, Any]` |
+| **Array** | `array` (lists and array-backed logical types such as `FloatVector`, `DoubleVector`) | `pa.list_(item_field)` | `list[Any]` |
+| **Map** | `map` (maps and `io.debezium.data.Hstore`) | `pa.map_(key_field, value_field)` | `dict[Any, Any]` |
 
 !!! tip "Preserving Debezium Logical Type Metadata"
     Logical types whose wire representation already matches a standard primitive or nested container (such as `io.debezium.data.Uuid`, `io.debezium.data.Json`, `io.debezium.data.geometry.Geometry`, `io.debezium.data.geometry.Point`, `io.debezium.data.vector.FloatVector`, and `io.debezium.data.Hstore`) compile cleanly through the corresponding standard handler while preserving their full Debezium logical type name in `pa.Field.metadata[b"debezium.logical_type"]`.

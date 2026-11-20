@@ -1,71 +1,59 @@
 from __future__ import annotations
 
-import json
 from abc import ABC, abstractmethod
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any, ClassVar
 
 import pyarrow as pa
 
-from pydbzengine.engine.base import (
-    ChangeEvent,
-    EventFormat,
-)
+from pydbzengine.engine.base import ChangeEvent, EventFormat
 from pydbzengine.engine.config import DebeziumConfig
-from pydbzengine.schema.handlers import (
-    DataTypeHandler,
-    IntTypeHandler,
-    MapTypeHandler,
-    StructTypeHandler,
-)
 from pydbzengine.schema.models import (
     ChangeBatch,
     ChangeRecord,
     EventKind,
     TableSchema,
 )
-from pydbzengine.schema.registry import TypeRegistry
-from pydbzengine.schema.spec import FieldSpec
+from pydbzengine.schema.types import (
+    build_arrow_field,
+    build_map_arrow_type,
+    resolve_scalar_arrow_type,
+    validate_variable_scale,
+)
 
 __all__ = [
-    "ConnectEventConverter",
     "EventConverter",
-    "JsonEventConverter",
+    "RowDecoder",
+    "ValueDecoder",
 ]
 
+ValueDecoder = Callable[[Any], Any]
+RowDecoder = Callable[[Any], dict[str, Any]]
+CompiledField = tuple[str, bool, ValueDecoder]
 
-def _decode_json_object(raw: Any, context: str) -> dict[str, Any]:
-    if isinstance(raw, dict):
-        return raw
-    if isinstance(raw, Mapping):
-        return dict(raw)
-    if isinstance(raw, (bytes, bytearray, memoryview)):
-        payload_str = bytes(raw).decode("utf-8").strip()
-    elif isinstance(raw, str) or type(raw).__name__ == "java.lang.String":
-        payload_str = str(raw).strip()
-    else:
-        raise TypeError(
-            f"Unsupported payload type {type(raw).__name__} for {context}: {raw!r}"
-        )
 
-    try:
-        parsed = json.loads(payload_str, parse_float=Decimal)
-    except json.JSONDecodeError as e:
-        raise ValueError(f"Invalid JSON in {context}: {e}") from e
+@dataclass(frozen=True, slots=True)
+class _SchemaNode:
+    """Single-level metadata view of a wire schema node during one-pass compilation."""
 
-    if not isinstance(parsed, dict):
-        raise ValueError(
-            f"Expected JSON object in {context}, got {type(parsed).__name__}"
-        )
-    return parsed
+    name: str
+    type_name: str
+    nullable: bool
+    logical_name: str | None
+    doc: str | None
+    parameters: Mapping[str, str]
+    raw_fields: tuple[tuple[str, Any], ...] = ()
+    raw_items: Any = None
+    raw_keys: Any = None
+    raw_values: Any = None
 
 
 @dataclass(frozen=True, slots=True)
 class _CompiledKey:
     raw_schema: Any
-    handler: DataTypeHandler
+    decoder: RowDecoder
     arrow_schema: pa.Schema | None
     key_fields: tuple[str, ...]
 
@@ -78,20 +66,132 @@ class _CachedSchema:
     value_schema: Any
     key_schema: Any
     table_schema: TableSchema
-    value_handler: StructTypeHandler
-    key_handler: DataTypeHandler | None
+    value_decoder: RowDecoder
+    key_decoder: RowDecoder | None
     logical_name: str | None = None
 
     def matches(self, value_schema: Any, key_schema: Any) -> bool:
-        val_eq = value_schema is self.value_schema or value_schema == self.value_schema
-        return val_eq and self.matches_key(key_schema)
+        return bool(
+            (value_schema is self.value_schema or value_schema == self.value_schema)
+            and (key_schema is self.key_schema or key_schema == self.key_schema)
+        )
 
-    def matches_key(self, key_schema: Any) -> bool:
-        return bool(key_schema is self.key_schema or key_schema == self.key_schema)
+
+def _decode_partition(val: Any) -> int | None:
+    if val is None:
+        return None
+    if type(val) is int:
+        return val
+    if (
+        isinstance(val, (bool, float, Decimal))
+        or hasattr(val, "booleanValue")
+        or hasattr(val, "toPlainString")
+        or hasattr(val, "isNaN")
+    ):
+        raise TypeError(f"Cannot convert {type(val).__name__} {val!r} to int")
+    if isinstance(val, int):
+        return int(val)
+    if hasattr(val, "longValue"):
+        return int(val.longValue())
+    if hasattr(val, "intValue"):
+        return int(val.intValue())
+    raise TypeError(f"Cannot convert partition {type(val).__name__} to int: {val!r}")
+
+
+def decode_struct_fields(
+    reader: Callable[[str], Any],
+    compiled_fields: tuple[CompiledField, ...],
+) -> dict[str, Any]:
+    """Shared single-try struct field loop preserving nested Field '<name>' diagnostics."""
+    result: dict[str, Any] = {}
+    name = ""
+    try:
+        for name, nullable, dec in compiled_fields:
+            raw = reader(name)
+            if raw is None:
+                if not nullable:
+                    raise ValueError(
+                        f"Non-nullable field '{name}' received null value."
+                    )
+                result[name] = None
+            else:
+                val = dec(raw)
+                if val is None and not nullable:
+                    raise ValueError(
+                        f"Non-nullable field '{name}' received null value."
+                    )
+                result[name] = val
+    except TypeError as err:
+        raise TypeError(f"Field '{name}': {err}") from err
+    except ValueError as err:
+        if str(err).startswith(f"Non-nullable field '{name}'"):
+            raise
+        raise ValueError(f"Field '{name}': {err}") from err
+    return result
+
+
+def decode_sequence_items(
+    items: Iterable[Any],
+    item_name: str,
+    item_nullable: bool,
+    item_dec: ValueDecoder,
+) -> list[Any]:
+    """Shared array element loop enforcing nullability and field-path diagnostics."""
+    out: list[Any] = []
+    try:
+        for raw in items:
+            if raw is None:
+                if not item_nullable:
+                    raise ValueError(
+                        f"Non-nullable field '{item_name}' received null value."
+                    )
+                out.append(None)
+            else:
+                val = item_dec(raw)
+                if val is None and not item_nullable:
+                    raise ValueError(
+                        f"Non-nullable field '{item_name}' received null value."
+                    )
+                out.append(val)
+    except TypeError as err:
+        raise TypeError(f"Field '{item_name}': {err}") from err
+    except ValueError as err:
+        if str(err).startswith(f"Non-nullable field '{item_name}'"):
+            raise
+        raise ValueError(f"Field '{item_name}': {err}") from err
+    return out
+
+
+def decode_map_value(
+    raw_val: Any,
+    val_name: str,
+    val_nullable: bool,
+    val_dec: ValueDecoder,
+) -> Any:
+    if raw_val is None:
+        if not val_nullable:
+            raise ValueError(f"Non-nullable field '{val_name}' received null value.")
+        return None
+    try:
+        val = val_dec(raw_val)
+    except TypeError as err:
+        raise TypeError(f"Field '{val_name}': {err}") from err
+    except ValueError as err:
+        raise ValueError(f"Field '{val_name}': {err}") from err
+    if val is None and not val_nullable:
+        raise ValueError(f"Non-nullable field '{val_name}' received null value.")
+    return val
 
 
 class EventConverter(ABC):
-    """Base pipeline for schema-enabled CDC event converters (Connect and JSON)."""
+    """
+    Abstract base pipeline shared by schema-enabled CDC converters
+    (ConnectEventConverter and JsonEventConverter).
+
+    Owns one-pass schema compilation, per-destination schema caching, key
+    resolution, tombstone handling, and ChangeBatch assembly while delegating
+    format-specific wire parsing and value decoding to concrete subclasses.
+    """
 
     DEFAULT_HEARTBEAT_PREFIX: ClassVar[str] = DebeziumConfig.DEFAULT_HEARTBEAT_PREFIX
     format: ClassVar[EventFormat]
@@ -108,9 +208,8 @@ class EventConverter(ABC):
                 f"heartbeat_prefix must be a non-empty string, got {heartbeat_prefix!r}"
             )
         self.heartbeat_prefix: str = heartbeat_prefix.strip()
-        self.default_variable_scale: int = default_variable_scale
-        self.registry: TypeRegistry = TypeRegistry(
-            default_variable_scale=default_variable_scale
+        self.default_variable_scale: int = validate_variable_scale(
+            default_variable_scale
         )
         self._cache: dict[str, _CachedSchema] = {}
         self._key_cache: dict[str, _CompiledKey] = {}
@@ -128,6 +227,8 @@ class EventConverter(ABC):
                 f"Expected DebeziumConfig for config, got {type(config).__name__}"
             )
         if config.format is EventFormat.CONNECT:
+            from pydbzengine.schema.connect import ConnectEventConverter
+
             return ConnectEventConverter(
                 heartbeat_prefix=config.heartbeat_prefix,
                 default_variable_scale=default_variable_scale,
@@ -138,22 +239,41 @@ class EventConverter(ABC):
                 "(EventFormat.CONNECT or EventFormat.JSON with schemas_enabled=True). "
                 "For schemaless JSON payloads, subclass BasePythonChangeHandler directly."
             )
+        from pydbzengine.schema.json import JsonEventConverter
+
         return JsonEventConverter(
             heartbeat_prefix=config.heartbeat_prefix,
             default_variable_scale=default_variable_scale,
         )
 
-    def convert(self, events: Iterable[ChangeEvent]) -> ChangeBatch:
-        """Converts an iterable of raw ChangeEvents into an ordered ChangeBatch."""
-        return ChangeBatch(records=tuple(self.convert_event(event) for event in events))
+    @abstractmethod
+    def _inspect_schema(
+        self, raw_schema: Any, field_name: str | None = None
+    ) -> _SchemaNode:
+        """Extracts single-level metadata from a format-specific wire schema."""
 
     @abstractmethod
-    def _parse_field_spec(self, raw_schema: Any, field_name: str) -> FieldSpec:
-        """Parses a format-specific wire schema into a normalized FieldSpec."""
+    def _scalar_decoder(
+        self, arrow_type: pa.DataType, logical_name: str | None
+    ) -> ValueDecoder:
+        """Returns a format-specific decoder for a compiled scalar/logical Arrow type."""
 
     @abstractmethod
-    def _convert_with_handler(self, handler: DataTypeHandler, raw_val: Any) -> Any:
-        """Converts a format-specific wire value using the compiled DataTypeHandler."""
+    def _struct_decoder(self, fields: tuple[CompiledField, ...]) -> RowDecoder:
+        """Returns a format-specific decoder for a struct with compiled child fields."""
+
+    @abstractmethod
+    def _array_decoder(self, item_field: CompiledField) -> ValueDecoder:
+        """Returns a format-specific decoder for an array with compiled item field."""
+
+    @abstractmethod
+    def _map_decoder(
+        self,
+        key_type: pa.DataType,
+        key_dec: ValueDecoder,
+        val_field: CompiledField,
+    ) -> ValueDecoder:
+        """Returns a format-specific decoder for a map with compiled key and value decoders."""
 
     @abstractmethod
     def _unpack_event(
@@ -162,6 +282,125 @@ class EventConverter(ABC):
         destination: str,
     ) -> tuple[Any, Any, Any, Any]:
         """Unpacks (raw_val_schema, raw_val, raw_key_schema, raw_key) from a ChangeEvent."""
+
+    def _compile_field(
+        self, raw_schema: Any, field_name: str | None = None
+    ) -> tuple[pa.Field, ValueDecoder, str | None]:
+        node = self._inspect_schema(raw_schema, field_name)
+        if (
+            node.type_name == "struct"
+            and node.logical_name != "io.debezium.data.VariableScaleDecimal"
+        ):
+            if not node.raw_fields:
+                raise ValueError(f"Struct field '{node.name}' has no sub-fields")
+            pa_fields: list[pa.Field] = []
+            children: list[CompiledField] = []
+            for sub_name, sub_raw in node.raw_fields:
+                sub_field, sub_dec, _ = self._compile_field(sub_raw, sub_name or None)
+                pa_fields.append(sub_field)
+                children.append((sub_field.name, sub_field.nullable, sub_dec))
+            arrow_field = build_arrow_field(
+                node.name,
+                pa.struct(pa_fields),
+                nullable=node.nullable,
+                doc=node.doc,
+                logical_name=node.logical_name,
+            )
+            return (
+                arrow_field,
+                self._struct_decoder(tuple(children)),
+                node.logical_name,
+            )
+
+        if node.type_name == "array":
+            if node.raw_items is None:
+                raise ValueError(f"Array field '{node.name}' missing 'items' schema")
+            item_field, item_dec, _ = self._compile_field(node.raw_items, "item")
+            arrow_field = build_arrow_field(
+                node.name,
+                pa.list_(item_field),
+                nullable=node.nullable,
+                doc=node.doc,
+                logical_name=node.logical_name,
+            )
+            return (
+                arrow_field,
+                self._array_decoder((item_field.name, item_field.nullable, item_dec)),
+                node.logical_name,
+            )
+
+        if node.type_name == "map":
+            if node.raw_keys is None or node.raw_values is None:
+                raise ValueError(
+                    f"Map field '{node.name}' missing 'keys' or 'values' schema"
+                )
+            key_field, key_dec, _ = self._compile_field(node.raw_keys, "key")
+            val_field, val_dec, _ = self._compile_field(node.raw_values, "value")
+            arrow_field = build_arrow_field(
+                node.name,
+                build_map_arrow_type(key_field, val_field),
+                nullable=node.nullable,
+                doc=node.doc,
+                logical_name=node.logical_name,
+            )
+            return (
+                arrow_field,
+                self._map_decoder(
+                    key_field.type,
+                    key_dec,
+                    (val_field.name, val_field.nullable, val_dec),
+                ),
+                node.logical_name,
+            )
+
+        arrow_type = resolve_scalar_arrow_type(
+            node.name,
+            node.type_name,
+            node.logical_name,
+            node.parameters,
+            default_variable_scale=self.default_variable_scale,
+        )
+        arrow_field = build_arrow_field(
+            node.name,
+            arrow_type,
+            nullable=node.nullable,
+            doc=node.doc,
+            logical_name=node.logical_name,
+        )
+        return (
+            arrow_field,
+            self._scalar_decoder(arrow_type, node.logical_name),
+            node.logical_name,
+        )
+
+    def _compile_struct(
+        self, raw_schema: Any, field_name: str
+    ) -> tuple[pa.Schema, RowDecoder, str | None]:
+        arrow_field, decoder, logical_name = self._compile_field(raw_schema, field_name)
+        if not pa.types.is_struct(arrow_field.type):
+            raise ValueError(
+                f"Expected struct schema for '{field_name}', got '{arrow_field.type}'"
+            )
+        return pa.schema(list(arrow_field.type)), decoder, logical_name
+
+    def _compile_key(
+        self, raw_schema: Any
+    ) -> tuple[pa.Schema | None, tuple[str, ...], RowDecoder]:
+        arrow_field, decoder, _ = self._compile_field(raw_schema, "key")
+        if pa.types.is_struct(arrow_field.type):
+            fields = list(arrow_field.type)
+            return pa.schema(fields), tuple(f.name for f in fields), decoder
+        if pa.types.is_map(arrow_field.type):
+            return (
+                None,
+                (),
+                lambda raw: {str(k): v for k, v in decoder(raw).items()},
+            )
+        return (
+            pa.schema([arrow_field]),
+            (arrow_field.name,),
+            lambda raw: {"key": decoder(raw)},
+        )
 
     @staticmethod
     def _destination(event: ChangeEvent) -> str:
@@ -179,38 +418,18 @@ class EventConverter(ABC):
             raise ValueError("Record contains an empty or missing destination.")
         return dest
 
-    @staticmethod
-    def _partition(event: ChangeEvent) -> int | None:
-        val = event.partition()
-        return IntTypeHandler.decode_connect_int(val) if val is not None else None
-
     def _resolve_key(
-        self,
-        destination: str,
-        raw_key_schema: Any,
+        self, destination: str, raw_key_schema: Any
     ) -> _CompiledKey | None:
         if raw_key_schema is None:
             return None
-        cached_key = self._key_cache.get(destination)
-        if cached_key is not None and cached_key.matches(raw_key_schema):
-            return cached_key
-
-        key_spec = self._parse_field_spec(raw_key_schema, "key")
-        key_field = self.registry.compile_field(key_spec)
-        handler = key_field.handler
-        if isinstance(handler, StructTypeHandler):
-            arrow_schema: pa.Schema | None = handler.arrow_schema
-            key_fields: tuple[str, ...] = tuple(f.name for f in handler.fields)
-        elif isinstance(handler, MapTypeHandler):
-            arrow_schema = None
-            key_fields = ()
-        else:
-            arrow_schema = pa.schema([key_field.arrow_field])
-            key_fields = (key_field.name,)
-
+        cached = self._key_cache.get(destination)
+        if cached is not None and cached.matches(raw_key_schema):
+            return cached
+        arrow_schema, key_fields, decoder = self._compile_key(raw_key_schema)
         compiled = _CompiledKey(
             raw_schema=raw_key_schema,
-            handler=handler,
+            decoder=decoder,
             arrow_schema=arrow_schema,
             key_fields=key_fields,
         )
@@ -229,24 +448,23 @@ class EventConverter(ABC):
         if cached is not None and cached.matches(value_schema, key_schema):
             return cached
 
-        val_spec = self._parse_field_spec(value_schema, "value")
-        value_handler = self.registry.compile_struct(val_spec)
+        arrow_schema, value_decoder, logical_name = self._compile_struct(
+            value_schema, "value"
+        )
         compiled_key = self._resolve_key(destination, key_schema)
         table_schema = TableSchema(
             destination=destination,
-            arrow_schema=value_handler.arrow_schema,
-            key_fields=(compiled_key.key_fields if compiled_key is not None else ()),
-            key_schema=(
-                compiled_key.arrow_schema if compiled_key is not None else None
-            ),
+            arrow_schema=arrow_schema,
+            key_fields=compiled_key.key_fields if compiled_key is not None else (),
+            key_schema=compiled_key.arrow_schema if compiled_key is not None else None,
         )
         entry = _CachedSchema(
             value_schema=value_schema,
             key_schema=key_schema,
             table_schema=table_schema,
-            value_handler=value_handler,
-            key_handler=compiled_key.handler if compiled_key is not None else None,
-            logical_name=val_spec.logical_name,
+            value_decoder=value_decoder,
+            key_decoder=compiled_key.decoder if compiled_key is not None else None,
+            logical_name=logical_name,
         )
         if cache:
             self._cache[destination] = entry
@@ -272,20 +490,40 @@ class EventConverter(ABC):
         cached = self._cache.get(destination)
         if cached is not None and cached.matches(raw_val_schema, raw_key_schema):
             return cached.table_schema
-        val_spec = self._parse_field_spec(raw_val_schema, "value")
-        if val_spec.type_name != "struct" or not val_spec.fields:
+        node = self._inspect_schema(raw_val_schema, "value")
+        if node.type_name != "struct" or not node.raw_fields:
             return None
         return self._compile_entry(
-            destination,
-            raw_val_schema,
-            raw_key_schema,
-            cache=False,
+            destination, raw_val_schema, raw_key_schema, cache=False
         ).table_schema
+
+    def _convert_key(
+        self,
+        destination: str,
+        raw_key: Any,
+        raw_key_schema: Any,
+        *,
+        key_decoder: RowDecoder | None = None,
+    ) -> dict[str, Any] | None:
+        if raw_key is None:
+            return None
+        if key_decoder is None:
+            compiled = self._resolve_key(destination, raw_key_schema)
+            if compiled is None:
+                raise ValueError(
+                    f"Event with non-null key is missing key schema for destination '{destination}'"
+                )
+            key_decoder = compiled.decoder
+        return key_decoder(raw_key)
+
+    def convert(self, events: Iterable[ChangeEvent]) -> ChangeBatch:
+        """Converts an iterable of raw ChangeEvents into an ordered ChangeBatch."""
+        return ChangeBatch(records=tuple(self.convert_event(event) for event in events))
 
     def convert_event(self, event: ChangeEvent) -> ChangeRecord:
         """Converts a single raw ChangeEvent into a ChangeRecord."""
         destination = self._destination(event)
-        partition = self._partition(event)
+        partition = _decode_partition(event.partition())
         raw_val_schema, raw_val, raw_key_schema, raw_key = self._unpack_event(
             event, destination
         )
@@ -302,11 +540,9 @@ class EventConverter(ABC):
 
         if raw_val is not None:
             entry = self._compile_entry(destination, raw_val_schema, raw_key_schema)
-            converted_value: dict[str, Any] = self._convert_with_handler(
-                entry.value_handler, raw_val
-            )
+            converted_value = entry.value_decoder(raw_val)
             converted_key = self._convert_key(
-                destination, raw_key, raw_key_schema, key_handler=entry.key_handler
+                destination, raw_key, raw_key_schema, key_decoder=entry.key_decoder
             )
             return ChangeRecord(
                 destination=destination,
@@ -333,139 +569,3 @@ class EventConverter(ABC):
             partition=partition,
             kind=EventKind.TOMBSTONE,
         )
-
-    def _convert_key(
-        self,
-        destination: str,
-        raw_key: Any,
-        raw_key_schema: Any,
-        *,
-        key_handler: DataTypeHandler | None = None,
-    ) -> dict[str, Any] | None:
-        if raw_key is None:
-            return None
-        if key_handler is None:
-            compiled_key = self._resolve_key(destination, raw_key_schema)
-            if compiled_key is None:
-                raise ValueError(
-                    f"Event with non-null key is missing key schema for destination '{destination}'"
-                )
-            key_handler = compiled_key.handler
-        if isinstance(key_handler, StructTypeHandler):
-            struct_key: dict[str, Any] = self._convert_with_handler(
-                key_handler, raw_key
-            )
-            return struct_key
-        converted = self._convert_with_handler(key_handler, raw_key)
-        if isinstance(key_handler, MapTypeHandler):
-            return {str(k): v for k, v in converted.items()}
-        return {"key": converted}
-
-
-class ConnectEventConverter(EventConverter):
-    """
-    Dedicated converter for in-memory Java Connect SourceRecords (`EventFormat.CONNECT`).
-    Schemas are always enabled and cached per destination with strong Java references.
-    """
-
-    format: ClassVar[EventFormat] = EventFormat.CONNECT
-
-    def _parse_field_spec(self, raw_schema: Any, field_name: str) -> FieldSpec:
-        return FieldSpec.from_connect(raw_schema, field_name=field_name)
-
-    def _convert_with_handler(self, handler: DataTypeHandler, raw_val: Any) -> Any:
-        return handler.convert_connect(raw_val)
-
-    @staticmethod
-    def _is_empty_connect_struct(raw_key_schema: Any, raw_key: Any) -> bool:
-        if raw_key_schema is None:
-            return False
-        j_type = raw_key_schema.type()
-        if j_type is None or str(j_type.name()).strip().lower() != "struct":
-            return False
-        if raw_key_schema.fields():
-            return False
-        if raw_key is None:
-            return True
-        if hasattr(raw_key, "schema"):
-            struct_schema = raw_key.schema()
-            if struct_schema is None:
-                return False
-            st_type = struct_schema.type()
-            return (
-                st_type is not None
-                and str(st_type.name()).strip().lower() == "struct"
-                and not struct_schema.fields()
-            )
-        return False
-
-    def _unpack_event(
-        self,
-        event: ChangeEvent,
-        destination: str,
-    ) -> tuple[Any, Any, Any, Any]:
-        source_rec = event.value()
-        if source_rec is None or not hasattr(source_rec, "valueSchema"):
-            raise TypeError(
-                f"Expected Java Connect SourceRecord with valueSchema() for destination '{destination}', "
-                f"got {type(source_rec).__name__}"
-            )
-        raw_val_schema = source_rec.valueSchema()
-        raw_val = source_rec.value()
-        raw_key_schema = source_rec.keySchema()
-        raw_key = source_rec.key()
-        if self._is_empty_connect_struct(raw_key_schema, raw_key):
-            raw_key_schema, raw_key = None, None
-        return raw_val_schema, raw_val, raw_key_schema, raw_key
-
-
-class JsonEventConverter(EventConverter):
-    """
-    Dedicated converter for schema-enabled JSON records (`EventFormat.JSON`, `schemas_enabled=True`).
-    Strictly requires `{"schema": ..., "payload": ...}` envelopes on records.
-    """
-
-    format: ClassVar[EventFormat] = EventFormat.JSON
-
-    def _parse_field_spec(self, raw_schema: Any, field_name: str) -> FieldSpec:
-        return FieldSpec.from_json(raw_schema, field_name=field_name)
-
-    def _convert_with_handler(self, handler: DataTypeHandler, raw_val: Any) -> Any:
-        return handler.convert_json(raw_val)
-
-    def _unpack_event(
-        self,
-        event: ChangeEvent,
-        destination: str,
-    ) -> tuple[Any, Any, Any, Any]:
-        val_schema, val_payload = self._unpack_envelope(
-            event.value(), f"event for destination '{destination}'"
-        )
-        key_schema, key_payload = self._unpack_envelope(
-            event.key(), f"CDC record key for destination '{destination}'"
-        )
-        if (
-            isinstance(key_schema, Mapping)
-            and isinstance(key_schema.get("type"), str)
-            and key_schema["type"].strip().lower() == "struct"
-            and (key_schema.get("fields") == [] or key_schema.get("fields") is None)
-            and (
-                key_payload is None
-                or (isinstance(key_payload, Mapping) and len(key_payload) == 0)
-            )
-        ):
-            key_schema, key_payload = None, None
-        return val_schema, val_payload, key_schema, key_payload
-
-    @staticmethod
-    def _unpack_envelope(raw: Any, context: str) -> tuple[Any, Any]:
-        if raw is None:
-            return None, None
-        envelope = _decode_json_object(raw, context)
-        if "schema" not in envelope or "payload" not in envelope:
-            raise ValueError(
-                f"Missing required 'schema' and 'payload' blocks in {context}. "
-                "Enable schemas ('converter.schemas.enable=true') for pydbzengine.schema, "
-                "or subclass BasePythonChangeHandler for schemaless JSON payloads."
-            )
-        return envelope["schema"], envelope["payload"]

@@ -67,9 +67,9 @@ def _has_non_nullable_addition(old_t: pa.DataType, new_t: pa.DataType) -> bool:
 
 
 def _is_additive_struct_change(old_f: pa.Field, new_f: pa.Field) -> bool:
-    if old_f.nullable != new_f.nullable:
-        return False
-    if not (pa.types.is_struct(old_f.type) and pa.types.is_struct(new_f.type)):
+    if old_f.nullable != new_f.nullable or not (
+        pa.types.is_struct(old_f.type) and pa.types.is_struct(new_f.type)
+    ):
         return False
     old_fields = list(old_f.type)
     new_fields = list(new_f.type)
@@ -199,11 +199,9 @@ class SchemaDiff:
             or self.reordered
             or self.key_fields_changed
             or self.key_schema_changed
+            or (not self.added_fields and not self.changed_fields)
+            or any(not f.nullable for f in self.added_fields)
         ):
-            return False
-        if not self.added_fields and not self.changed_fields:
-            return False
-        if any(not f.nullable for f in self.added_fields):
             return False
         return all(
             _is_additive_struct_change(old_f, new_f)
@@ -266,9 +264,8 @@ class TableSchema:
             previous.arrow_schema if isinstance(previous, TableSchema) else previous
         )
         new_pa = self.arrow_schema
-
-        old_map: dict[str, pa.Field] = {f.name: f for f in old_pa}
-        new_map: dict[str, pa.Field] = {f.name: f for f in new_pa}
+        old_map = {f.name: f for f in old_pa}
+        new_map = {f.name: f for f in new_pa}
 
         added = tuple(f for name, f in new_map.items() if name not in old_map)
         removed = tuple(f for name, f in old_map.items() if name not in new_map)
@@ -284,32 +281,24 @@ class TableSchema:
         reordered = [name for name in old_pa.names if name in new_map] != [
             name for name in new_pa.names if name in old_map
         ]
-        key_fields_changed = (
-            self.key_fields != previous.key_fields
-            if isinstance(previous, TableSchema)
-            else False
-        )
-        key_schema_changed = (
-            self.key_schema != previous.key_schema
-            if isinstance(previous, TableSchema)
-            else False
-        )
+        is_table_schema = isinstance(previous, TableSchema)
         return SchemaDiff(
             added_fields=added,
             removed_fields=removed,
             changed_fields=changed,
             reordered=reordered,
-            key_fields_changed=key_fields_changed,
-            key_schema_changed=key_schema_changed,
+            key_fields_changed=(
+                self.key_fields != previous.key_fields if is_table_schema else False
+            ),
+            key_schema_changed=(
+                self.key_schema != previous.key_schema if is_table_schema else False
+            ),
         )
 
 
 @dataclass(frozen=True, slots=True)
 class ChangeRecord:
-    """
-    Unified domain model representing a single converted CDC change event
-    (data records, heartbeats, DDL schema changes, and delete tombstones).
-    """
+    """Unified domain model representing a single converted CDC change event."""
 
     destination: str
     value: dict[str, Any] | None = None
@@ -337,20 +326,21 @@ class ChangeRecord:
 
 @dataclass(frozen=True, slots=True)
 class TableBatch:
-    """A homogeneous batch of consecutive ChangeRecords sharing a single TableSchema."""
+    """Homogeneous batch of consecutive DATA ChangeRecords sharing a single TableSchema."""
 
     schema: TableSchema
     records: tuple[ChangeRecord, ...] = ()
 
     def __post_init__(self) -> None:
+        dest = self.schema.destination
         for record in self.records:
             if record.kind is not EventKind.DATA or record.value is None:
                 raise ValueError(
                     f"TableBatch accepts only DATA ChangeRecords with non-null values, got kind '{record.kind.value}'."
                 )
-            if record.destination != self.schema.destination:
+            if record.destination != dest:
                 raise ValueError(
-                    f"TableBatch record destination '{record.destination}' does not match schema destination '{self.schema.destination}'."
+                    f"TableBatch record destination '{record.destination}' does not match schema destination '{dest}'."
                 )
 
     @property
@@ -382,6 +372,10 @@ class TableBatch:
                 arrays.append(pa.nulls(table.num_rows, type=f.type))
         return pa.Table.from_arrays(arrays, schema=target_schema)
 
+    def __arrow_c_stream__(self, requested_schema: object = None) -> object:
+        """Arrow PyCapsule Interface for zero-glue interop with DuckDB, Polars, PyIceberg, and DataFusion."""
+        return self.to_arrow().__arrow_c_stream__(requested_schema)
+
     def __len__(self) -> int:
         return len(self.records)
 
@@ -391,10 +385,7 @@ class TableBatch:
 
 @dataclass(frozen=True, slots=True)
 class ChangeBatch:
-    """
-    Ordered collection of converted ChangeRecord items produced from an engine batch.
-    Preserves arrival order across all event kinds (data, heartbeat, schema_change, tombstone).
-    """
+    """Ordered collection of converted ChangeRecord items produced from an engine batch."""
 
     records: tuple[ChangeRecord, ...] = ()
 
@@ -403,7 +394,6 @@ class ChangeBatch:
         return self.of_kind(EventKind.DATA)
 
     def of_kind(self, kind: EventKind) -> tuple[ChangeRecord, ...]:
-        """Returns all records matching the requested EventKind in arrival order."""
         return tuple(r for r in self.records if r.kind is kind)
 
     def destination_events(self) -> tuple[TableBatch | ChangeRecord, ...]:
@@ -459,10 +449,6 @@ class ChangeBatch:
         return tuple(output)
 
     def table_batches(self) -> tuple[TableBatch, ...]:
-        """
-        Groups data records by destination in arrival order and slices them
-        into homogeneous TableBatch runs on TableSchema or tombstone boundaries.
-        """
         return tuple(
             item for item in self.destination_events() if isinstance(item, TableBatch)
         )

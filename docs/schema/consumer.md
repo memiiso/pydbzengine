@@ -1,6 +1,6 @@
 # Schema-Aware Consumer & Examples
 
-`SchemaAwareChangeHandler` (`pydbzengine.schema.handler`, re-exported from `pydbzengine.schema`) is the base class for schema-driven CDC consumers. It converts incoming `ChangeEvent` batches via `EventConverter`, tracks the active `TableSchema` per destination, and dispatches causally ordered lifecycle hooks.
+`SchemaAwareChangeHandler` (`pydbzengine.schema.consumer`, re-exported from `pydbzengine.schema`) is the base class for schema-driven CDC consumers. It converts incoming `ChangeEvent` batches via `EventConverter`, tracks the active `TableSchema` per destination, and dispatches causally ordered lifecycle hooks.
 
 ## Lifecycle Hooks & Dispatch Sequence
 

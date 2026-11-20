@@ -1,9 +1,6 @@
 from __future__ import annotations
 
-from pydbzengine.engine.base import (
-    BasePythonChangeHandler,
-    ChangeEvent,
-)
+from pydbzengine.engine.base import BasePythonChangeHandler, ChangeEvent
 from pydbzengine.engine.config import DebeziumConfig
 from pydbzengine.schema.converter import EventConverter
 from pydbzengine.schema.models import (
@@ -14,11 +11,9 @@ from pydbzengine.schema.models import (
     TableBatch,
     TableSchema,
 )
-from pydbzengine.schema.registry import TypeRegistry
+from pydbzengine.schema.types import validate_variable_scale
 
-__all__ = [
-    "SchemaAwareChangeHandler",
-]
+__all__ = ["SchemaAwareChangeHandler"]
 
 
 class SchemaAwareChangeHandler(BasePythonChangeHandler):
@@ -38,7 +33,7 @@ class SchemaAwareChangeHandler(BasePythonChangeHandler):
         default_variable_scale: int = 10,
     ) -> None:
         super().__init__()
-        self.default_variable_scale: int = TypeRegistry.validate_variable_scale(
+        self.default_variable_scale: int = validate_variable_scale(
             default_variable_scale
         )
         if converter is not None and config is not None:
@@ -77,8 +72,7 @@ class SchemaAwareChangeHandler(BasePythonChangeHandler):
             )
         if not records:
             return 0
-        batch = self.converter.convert(records)
-        self.handle_change_batch(batch)
+        self.handle_change_batch(self.converter.convert(records))
         return len(records)
 
     def handle_change_batch(self, batch: ChangeBatch) -> None:
