@@ -102,7 +102,9 @@ from pydbzengine.schema import (
 
 class ArrowConsumer(SchemaAwareChangeHandler):
     def on_table_created(self, schema: TableSchema) -> None:
-        self.logger.info("Table %s created: %s", schema.destination, schema.arrow_schema.names)
+        self.logger.info(
+            "Table %s created: %s", schema.destination, schema.arrow_schema.names
+        )
 
     def on_schema_evolved(
         self, new_schema: TableSchema, old_schema: TableSchema, diff: SchemaDiff
@@ -116,7 +118,9 @@ class ArrowConsumer(SchemaAwareChangeHandler):
 
     def handle_table_batch(self, batch: TableBatch) -> None:
         arrow_table = batch.to_arrow()
-        self.logger.info("Received %d rows for %s", arrow_table.num_rows, batch.destination)
+        self.logger.info(
+            "Received %d rows for %s", arrow_table.num_rows, batch.destination
+        )
 
 
 props = {
