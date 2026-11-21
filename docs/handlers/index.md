@@ -4,9 +4,10 @@
 
 ## Available Handlers
 
+- **[Schema-Aware Consumer (`SchemaAwareChangeHandler`)](../schema/consumer.md)**: Base class in `pydbzengine.schema` (`pydbzengine[arrow]`) providing compiled PyArrow schemas, `SchemaDiff` tracking, and homogeneous `TableBatch` delivery.
 - **[Apache Iceberg](iceberg.md)**: Stream change events directly into Apache Iceberg tables. Supports automatic schema inference and partitioning (via `IcebergChangeHandlerV2`).
 - **[dlt (data load tool)](dlt.md)**: Integrate with `dlt` to load data into DuckDB, BigQuery, Snowflake, and more.
-- **[Custom Handlers](custom.md)**: Implement your own logic for any destination or processing requirement.
+- **[Custom Handlers (`BasePythonChangeHandler`)](custom.md)**: Process raw `ChangeEvent` batches directly in Python (including schemaless JSON).
 
 ## Using a Handler
 

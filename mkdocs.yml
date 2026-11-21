@@ -38,16 +38,22 @@ theme:
 
 nav:
   - Home: index.md
-  - Installation: installation.md
-  - How it Works: how-it-works.md
-  - Configuration: configuration.md
+  - Getting Started:
+      - Installation: installation.md
+      - How it Works: how-it-works.md
+      - Configuration: configuration.md
+  - Schema Subsystem:
+      - Architecture & Pipeline: schema/index.md
+      - Domain Models & Types: schema/models.md
+      - Schema-Aware Consumer: schema/consumer.md
   - Handlers:
       - Overview: handlers/index.md
       - Apache Iceberg: handlers/iceberg.md
       - dlt (data load tool): handlers/dlt.md
       - Custom Handlers: handlers/custom.md
-  - Apache Airflow: airflow.md
-  - Helper Utilities: helpers.md
+  - Integrations & Utilities:
+      - Apache Airflow: airflow.md
+      - Helper Utilities: helpers.md
   - Contributing: contributing.md
 
 markdown_extensions:
@@ -57,7 +63,11 @@ markdown_extensions:
       pygments_lang_class: true
   - pymdownx.inlinehilite
   - pymdownx.snippets
-  - pymdownx.superfences
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
   - admonition
   - pymdownx.details
   - abbr
