@@ -63,6 +63,7 @@ dev = [
     "coverage",
 ]
 docs = [
+    "mkdocs>=1.6,<2",
     "mkdocs-material",
 ]
 
@@ -71,7 +72,7 @@ docs = [
 
 [project.urls]
 Homepage = "https://github.com/memiiso/pydbzengine"
-Documentation = "https://github.com/memiiso/pydbzengine"
+Documentation = "https://memiiso.github.io/pydbzengine"
 Repository = "https://github.com/memiiso/pydbzengine"
 Issues = "https://github.com/memiiso/pydbzengine/issues"
 Changelog = "https://github.com/memiiso/pydbzengine/releases"
