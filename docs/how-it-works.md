@@ -2,6 +2,13 @@
 
 `pydbzengine` bridges Python applications and the Java-based Debezium Embedded Engine.
 
+<a class="dbz-powered-by" href="https://debezium.io/documentation/reference/stable/development/engine.html" target="_blank" rel="noopener">
+  <span>Built on</span>
+  ![Debezium](assets/debezium-logo-dark.svg#only-light)
+  ![Debezium](assets/debezium-logo-white.svg#only-dark)
+  <span>Embedded Engine</span>
+</a>
+
 ## Architecture
 
 At its core, `pydbzengine` leverages [JPype](https://jpype.readthedocs.io/en/stable/) to:

@@ -1,23 +1,32 @@
 site_name: pydbzengine
+site_description: Pythonic interface for the Debezium Embedded Engine
 site_url: https://memiiso.github.io/pydbzengine
 repo_url: https://github.com/memiiso/pydbzengine
 repo_name: memiiso/pydbzengine
 edit_uri: edit/main/docs/
+copyright: >
+  Licensed under the Apache License 2.0 &mdash; Powered by
+  <a href="https://debezium.io" target="_blank" rel="noopener">Debezium</a>
 
 theme:
   name: material
+  logo: assets/debezium-icon.svg
+  favicon: assets/favicon.svg
+  font:
+    text: Inter
+    code: JetBrains Mono
   palette:
     - media: "(prefers-color-scheme: light)"
       scheme: default
-      primary: indigo
-      accent: indigo
+      primary: custom
+      accent: custom
       toggle:
         icon: material/brightness-7
         name: Switch to dark mode
     - media: "(prefers-color-scheme: dark)"
       scheme: slate
-      primary: indigo
-      accent: indigo
+      primary: custom
+      accent: custom
       toggle:
         icon: material/brightness-4
         name: Switch to light mode
@@ -25,6 +34,7 @@ theme:
     - navigation.indexes
     - navigation.tabs
     - navigation.top
+    - navigation.footer
     - navigation.instant
     - navigation.tracking
     - navigation.path
@@ -35,6 +45,9 @@ theme:
     - content.code.copy
     - content.code.annotate
     - content.tabs.link
+
+extra_css:
+  - stylesheets/debezium.css
 
 nav:
   - Home: index.md
@@ -71,6 +84,8 @@ markdown_extensions:
   - admonition
   - pymdownx.details
   - abbr
+  - attr_list
+  - md_in_html
   - toc:
       permalink: true
   - pymdownx.tabbed:
@@ -87,4 +102,7 @@ extra:
       link: https://github.com/memiiso/pydbzengine
     - icon: fontawesome/brands/python
       link: https://pypi.org/project/pydbzengine
+    - icon: material/database-sync
+      link: https://debezium.io
+      name: Debezium Official Site
 
