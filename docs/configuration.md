@@ -34,6 +34,24 @@ engine = DebeziumEngine(properties=dbz_properties, handler=handler)
 engine = DebeziumEngine(properties=dbz_properties, handler=handler, format="connect")
 ```
 
+### Typed Configuration (`DebeziumConfig`)
+
+You can wrap properties in `DebeziumConfig` to validate wire format, schema mode, and heartbeat routing up front and share the same immutable config between `DebeziumEngine` and standalone `EventConverter.from_config()`:
+
+```python
+from pydbzengine import DebeziumConfig, DebeziumEngine, EventFormat
+
+config = DebeziumConfig(
+    properties=dbz_properties,
+    format=EventFormat.JSON,
+    schemas_enabled=True,
+    heartbeat_prefix="__debezium-heartbeat",
+)
+engine = DebeziumEngine(properties=config, handler=handler)
+```
+
+`DebeziumConfig` fails fast with `ValueError` if explicit arguments conflict with keys inside `properties` (such as `converter.schemas.enable`, `value.converter`, or `topic.heartbeat.prefix`).
+
 ---
 
 ## Schema History Properties

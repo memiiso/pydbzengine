@@ -17,7 +17,9 @@ When `DebeziumEngine` passes a batch of `ChangeEvent` records to `SchemaAwareCha
 
 To handle non-data event groups (`TOMBSTONE`, `SCHEMA_CHANGE`, `HEARTBEAT`) or custom cross-table / causal ordering, override `handle_change_batch(self, batch: ChangeBatch)` and slice `batch` with `batch.of_kind(...)`, `batch.group_by_kind()`, and `batch.group_by_destination()`.
 
-You can inspect currently tracked schemas at any time via `self.schemas` (returns a copy of `dict[str, TableSchema]`) or `self.get_schema(destination)`. Pass `default_variable_scale` to `super().__init__(default_variable_scale=...)` if you need a custom scale for `VariableScaleDecimal` fields (defaults to `10`).
+You can inspect tracked schemas via `self.schemas` (returns a copy of `dict[str, TableSchema]`) or `self.get_schema(destination)`.
+
+When attached to `DebeziumEngine`, the engine calls `handler.configure(config)` automatically. For standalone use or testing, pass `config=DebeziumConfig(...)` or `converter=...` to `SchemaAwareChangeHandler(...)`, or call `handler.configure(config)` directly. Pass `default_variable_scale` (default `10`) to customize the Arrow decimal scale for `VariableScaleDecimal` fields.
 
 ```mermaid
 sequenceDiagram
@@ -25,7 +27,7 @@ sequenceDiagram
     participant Engine as DebeziumEngine
     participant Handler as SchemaAwareChangeHandler
     participant Conv as EventConverter
-    participant Sink as Custom Consumer (e.g. Snowflake)
+    participant Sink as Custom Consumer
 
     Note over Engine,Sink: Batch 1: Initial Records (v1 Schema: id, amount)
     Engine->>Handler: handle_batch([event_1, event_2])
@@ -123,20 +125,12 @@ if __name__ == "__main__":
 
 ---
 
-## Custom Snowflake CDC Consumer Example (`ExtractNewRecordState`)
+## DuckDB / Arrow Sink Example (`ExtractNewRecordState`)
 
-When loading into a relational warehouse or lakehouse table, configure Debezium's `ExtractNewRecordState` SMT (`transforms.unwrap.type = io.debezium.transforms.ExtractNewRecordState`) with `add.fields = op` and `delete.tombstone.handling.mode = rewrite`. Debezium then emits flat table rows with `__op` and `__deleted` metadata columns so `schema.arrow_schema` maps directly to table columns:
-
-- **`arrow_type_to_snowflake_sql`**: Maps `schema.arrow_schema` field types to Snowflake DDL types.
-- **`on_table_created`**: Executes `CREATE TABLE IF NOT EXISTS` using `schema.arrow_schema` (excluding `__`-prefixed SMT metadata columns) and `schema.key_fields` for `PRIMARY KEY` constraints.
-- **`on_schema_evolved`**: Verifies `diff.is_compatible` and executes `ALTER TABLE ... ADD COLUMN` for newly added data columns in `diff.added_fields`.
-- **`handle_table_batch`**: Appends keyless tables directly via `batch.to_arrow(target_schema=data_schema)`, or stages keyed CDC records with an explicit `__CDC_OP` marker (`"D"` for deletes, `"U"` for inserts/updates) and executes an atomic `MERGE INTO`.
+When loading into an analytical or relational table, configure Debezium's `ExtractNewRecordState` SMT (`io.debezium.transforms.ExtractNewRecordState`) with `add.fields = op` and `delete.tombstone.handling.mode = rewrite`. Debezium then emits flat table rows so `TableBatch` can be queried directly via DuckDB's Arrow PyCapsule support:
 
 ```python
-from __future__ import annotations
-
-from typing import Any
-
+import duckdb
 import pyarrow as pa
 
 from pydbzengine import DebeziumEngine
@@ -148,63 +142,16 @@ from pydbzengine.schema import (
 )
 
 
-def arrow_type_to_snowflake_sql(dtype: pa.DataType) -> str:
-    if pa.types.is_boolean(dtype):
-        return "BOOLEAN"
-    if pa.types.is_integer(dtype):
-        return "NUMBER(38, 0)"
-    if pa.types.is_floating(dtype):
-        return "FLOAT"
-    if pa.types.is_decimal(dtype):
-        return f"NUMBER({dtype.precision}, {dtype.scale})"
-    if pa.types.is_string(dtype) or pa.types.is_large_string(dtype):
-        return "VARCHAR"
-    if pa.types.is_binary(dtype) or pa.types.is_large_binary(dtype):
-        return "BINARY"
-    if pa.types.is_date(dtype):
-        return "DATE"
-    if pa.types.is_time(dtype):
-        return "TIME"
-    if pa.types.is_timestamp(dtype):
-        return "TIMESTAMP_TZ" if dtype.tz is not None else "TIMESTAMP_NTZ"
-    if pa.types.is_struct(dtype) or pa.types.is_list(dtype) or pa.types.is_map(dtype):
-        return "VARIANT"
-    raise ValueError(f"Unsupported PyArrow type for Snowflake DDL: {dtype}")
-
-
-def data_arrow_schema(schema: TableSchema) -> pa.Schema:
-    return pa.schema(
-        [field for field in schema.arrow_schema if not field.name.startswith("__")]
-    )
-
-
-class SnowflakeChangeHandler(SchemaAwareChangeHandler):
-    def __init__(
-        self,
-        snowflake_conn: Any,
-        target_schema: str,
-    ) -> None:
+class DuckDBChangeHandler(SchemaAwareChangeHandler):
+    def __init__(self, conn: duckdb.DuckDBPyConnection) -> None:
         super().__init__()
-        self.conn = snowflake_conn
-        self.target_schema = target_schema
+        self.conn = conn
 
     def on_table_created(self, schema: TableSchema) -> None:
-        table_fqn = f'"{self.target_schema}"."{schema.table_name.upper()}"'
-        col_defs: list[str] = []
-
-        for field in data_arrow_schema(schema):
-            sf_type = arrow_type_to_snowflake_sql(field.type)
-            null_clause = "" if field.nullable else " NOT NULL"
-            col_defs.append(f'"{field.name.upper()}" {sf_type}{null_clause}')
-
-        if schema.key_fields:
-            pk_cols = ", ".join(f'"{pk.upper()}"' for pk in schema.key_fields)
-            col_defs.append(f"PRIMARY KEY ({pk_cols})")
-
-        ddl = f"CREATE TABLE IF NOT EXISTS {table_fqn} ({', '.join(col_defs)})"
-        self.logger.info("Executing DDL: %s", ddl)
-        with self.conn.cursor() as cur:
-            cur.execute(ddl)
+        empty = schema.arrow_schema.empty_table()
+        self.conn.execute(
+            f'CREATE TABLE IF NOT EXISTS "{schema.table_name}" AS SELECT * FROM empty'
+        )
 
     def on_schema_evolved(
         self,
@@ -214,118 +161,29 @@ class SnowflakeChangeHandler(SchemaAwareChangeHandler):
     ) -> None:
         if not diff.is_compatible:
             raise RuntimeError(
-                f"Incompatible schema evolution for '{new_schema.destination}': "
-                f"removed={[f.name for f in diff.removed_fields]}, "
-                f"changed={[(o.name, o.type, n.type) for o, n in diff.changed_fields]}"
+                f"Incompatible schema change on {new_schema.destination}: "
+                f"removed={[f.name for f in diff.removed_fields]}"
             )
-
-        added_data_fields = [
-            f for f in diff.added_fields if not f.name.startswith("__")
-        ]
-        if not added_data_fields:
-            return
-
-        table_fqn = f'"{self.target_schema}"."{new_schema.table_name.upper()}"'
-        add_clauses = [
-            f'"{field.name.upper()}" {arrow_type_to_snowflake_sql(field.type)}'
-            for field in added_data_fields
-        ]
-        alter_sql = f"ALTER TABLE {table_fqn} ADD COLUMN {', '.join(add_clauses)}"
-        self.logger.info("Executing DDL: %s", alter_sql)
-        with self.conn.cursor() as cur:
-            cur.execute(alter_sql)
+        for field in diff.added_fields:
+            col_empty = pa.schema([field]).empty_table()
+            col_type = self.conn.execute(
+                "SELECT column_type FROM (DESCRIBE SELECT * FROM col_empty)"
+            ).fetchone()[0]
+            self.conn.execute(
+                f'ALTER TABLE "{new_schema.table_name}" ADD COLUMN "{field.name}" {col_type}'
+            )
 
     def handle_table_batch(self, batch: TableBatch) -> None:
-        from snowflake.connector.pandas_tools import write_pandas
-
-        schema = batch.schema
-        data_schema = data_arrow_schema(schema)
-        target_table = schema.table_name.upper()
-        table_fqn = f'"{self.target_schema}"."{target_table}"'
-
-        if not schema.key_fields:
-            df = batch.to_arrow(target_schema=data_schema).to_pandas()
-            df.columns = [col.upper() for col in df.columns]
-            write_pandas(
-                conn=self.conn,
-                df=df,
-                table_name=target_table,
-                schema=self.target_schema,
-                quote_identifiers=True,
-            )
-            return
-
-        data_cols = data_schema.names
-        staged_rows: list[dict[str, Any]] = []
-        for record in batch:
-            row = record.value
-            if row is None:
-                continue
-            op = row.get("__op")
-            if op in ("t", "m"):
-                continue
-            is_delete = op == "d" or row.get("__deleted") == "true"
-            staged_row = {col: row.get(col) for col in data_cols}
-            staged_row["__CDC_OP"] = "D" if is_delete else "U"
-            staged_rows.append(staged_row)
-
-        if not staged_rows:
-            return
-
-        stage_table = f"STAGE_{target_table}"
-        stage_fqn = f'"{self.target_schema}"."{stage_table}"'
-        stage_schema = data_schema.append(pa.field("__CDC_OP", pa.string()))
-        stage_df = pa.Table.from_pylist(staged_rows, schema=stage_schema).to_pandas()
-        stage_df.columns = [col.upper() for col in stage_df.columns]
-
-        with self.conn.cursor() as cur:
-            cur.execute(
-                f"CREATE OR REPLACE TEMPORARY TABLE {stage_fqn} LIKE {table_fqn}"
-            )
-            cur.execute(f'ALTER TABLE {stage_fqn} ADD COLUMN "__CDC_OP" VARCHAR')
-
-        write_pandas(
-            conn=self.conn,
-            df=stage_df,
-            table_name=stage_table,
-            schema=self.target_schema,
-            quote_identifiers=True,
+        # TableBatch implements __arrow_c_stream__, so DuckDB reads it directly.
+        self.conn.execute(
+            f'INSERT INTO "{batch.schema.table_name}" BY NAME SELECT * FROM batch'
         )
-
-        join_cond = " AND ".join(
-            f't."{pk.upper()}" = s."{pk.upper()}"' for pk in schema.key_fields
-        )
-        col_names = [f.name.upper() for f in data_schema]
-        update_set = ", ".join(f't."{c}" = s."{c}"' for c in col_names)
-        insert_cols = ", ".join(f'"{c}"' for c in col_names)
-        insert_vals = ", ".join(f's."{c}"' for c in col_names)
-
-        merge_sql = f"""
-        MERGE INTO {table_fqn} AS t
-        USING {stage_fqn} AS s
-        ON {join_cond}
-        WHEN MATCHED AND s."__CDC_OP" = 'D' THEN DELETE
-        WHEN MATCHED AND s."__CDC_OP" = 'U' THEN UPDATE SET {update_set}
-        WHEN NOT MATCHED AND s."__CDC_OP" = 'U' THEN INSERT ({insert_cols}) VALUES ({insert_vals})
-        """
-        with self.conn.cursor() as cur:
-            cur.execute(merge_sql)
 
 
 if __name__ == "__main__":
-    import snowflake.connector
-
-    sf_conn = snowflake.connector.connect(
-        user="cdc_user",
-        password="cdc_password",
-        account="xy12345.us-east-1",
-        warehouse="CDC_WH",
-        database="ANALYTICS",
-        schema="PUBLIC",
-    )
-
+    conn = duckdb.connect("cdc.duckdb")
     dbz_props = {
-        "name": "snowflake-cdc-engine",
+        "name": "duckdb-cdc-engine",
         "connector.class": "io.debezium.connector.postgresql.PostgresConnector",
         "database.hostname": "localhost",
         "database.port": "5432",
@@ -335,18 +193,18 @@ if __name__ == "__main__":
         "topic.prefix": "cdc",
         "table.include.list": "public.customers,public.orders",
         "offset.storage": "org.apache.kafka.connect.storage.FileOffsetBackingStore",
-        "offset.storage.file.filename": "/tmp/snowflake_offsets.dat",
+        "offset.storage.file.filename": "/tmp/duckdb_offsets.dat",
         "transforms": "unwrap",
         "transforms.unwrap.type": "io.debezium.transforms.ExtractNewRecordState",
         "transforms.unwrap.add.fields": "op",
         "transforms.unwrap.delete.tombstone.handling.mode": "rewrite",
     }
 
-    handler = SnowflakeChangeHandler(
-        snowflake_conn=sf_conn,
-        target_schema="PUBLIC",
+    engine = DebeziumEngine(
+        properties=dbz_props,
+        handler=DuckDBChangeHandler(conn=conn),
+        format="connect",
     )
-    engine = DebeziumEngine(properties=dbz_props, handler=handler, format="connect")
     engine.run()
 ```
 
@@ -402,9 +260,9 @@ class CausalKvHandler(SchemaAwareChangeHandler):
                 if record.kind is EventKind.DATA:
                     if record.schema is not None:
                         self.reconcile_schema(record.schema)
-                    self.put(dest, record.key, record.value)
+                    self.logger.info("Upsert %s key=%s", dest, record.key)
                 else:
-                    self.delete(dest, record.key)
+                    self.logger.info("Delete %s key=%s", dest, record.key)
 ```
 
 ### Aligning Batches to an Evolved `target_schema`

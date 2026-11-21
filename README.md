@@ -11,33 +11,37 @@ A Pythonic interface for the [Debezium Engine](https://debezium.io/documentation
 
 ## Features
 
-*   **Pure Python Interface**: Interact with the powerful Debezium Engine using simple Python classes and methods.
-*   **Multi-Format Support**: Unified engine supporting both JSON and Kafka Connect record formats (`json` and `connect`).
-*   **Pluggable Event Handlers**: Easily create custom handlers to process CDC events according to your specific needs.
-*   **Built-in Iceberg Handler**: Stream change events directly into Apache Iceberg tables with zero boilerplate.
-*   **Seamless Integration**: Designed to work with popular Python data tools like [dlt (data load tool)](https://dlthub.com/).
-*   **Apache Airflow Operator**: Run Debezium engines directly within Airflow DAGs using the built-in `DebeziumEngineOperator` (see [Airflow docs](docs/airflow.md)).
-*   **Asynchronous & Snapshot Helpers**: Run engines with time limits or terminate them automatically once initial snapshots complete using `Utils` (see [Helper docs](docs/helpers.md)).
-*   **All Debezium Connectors**: Supports all standard Debezium connectors (PostgreSQL, MySQL, SQL Server, Oracle, etc.).
+*   **Python Interface**: Configure and run the embedded Debezium Engine using Python dicts (or `DebeziumConfig`) and handler classes.
+*   **Multi-Format Support**: Consume events in `"json"` or Kafka `"connect"` (`SourceRecord`) wire formats.
+*   **Schema-Aware Consumer (`pydbzengine.schema`)**: Compile Debezium schemas into Apache Arrow (`pyarrow.Schema` and `pyarrow.Table`) with automatic schema tracking, `SchemaDiff`, and Arrow PyCapsule interop (see [Schema docs](https://memiiso.github.io/pydbzengine/schema/)).
+*   **Pluggable Event Handlers**: Build custom handlers on `BasePythonChangeHandler` or `SchemaAwareChangeHandler`.
+*   **Built-in Iceberg Handler**: Stream change events into Apache Iceberg tables.
+*   **dlt Integration**: Load CDC events into DuckDB, BigQuery, Snowflake, and other [dlt](https://dlthub.com/) destinations.
+*   **Apache Airflow Operator**: Run Debezium engines inside Airflow DAGs via `DebeziumEngineOperator` (see [Airflow docs](docs/airflow.md)).
+*   **Execution Helpers**: Run engines with timeouts or stop automatically after initial snapshots complete via `Utils` (see [Helper docs](docs/helpers.md)).
+*   **Debezium Connectors**: Bundled with standard Debezium connectors (PostgreSQL, MySQL, MariaDB, SQL Server, Oracle, MongoDB, Db2).
 
 ## How it Works
 
-This library acts as a bridge between the Python world and the Java-based Debezium Engine. It uses [JPype](https://jpype.readthedocs.io/en/stable/) to manage the JVM and interact with Debezium's Java classes, exposing a clean, Pythonic API so you can focus on your data logic without writing Java code.
+This library bridges Python and the Java-based Debezium Engine via [JPype](https://jpype.readthedocs.io/en/stable/), managing the embedded JVM and forwarding Debezium change batches into Python handlers.
 
 ## Pre-available Data Handling Classes
 
-`pydbzengine` comes with several built-in handlers. For detailed configuration and advanced usage, see the [Handlers Documentation](https://memiiso.github.io/pydbzengine/handlers/).
+`pydbzengine` includes built-in handlers and base classes. For detailed configuration and usage, see the [Handlers Documentation](https://memiiso.github.io/pydbzengine/handlers/).
+
+### Schema-Aware Consumer (`pydbzengine[arrow]`)
+*   **`SchemaAwareChangeHandler`**: Compiles schema-enabled `"json"` and `"connect"` events into PyArrow schemas and `TableBatch` objects with `on_table_created`, `on_schema_evolved` (`SchemaDiff`), and `handle_table_batch` lifecycle hooks. See [Schema Subsystem Docs](https://memiiso.github.io/pydbzengine/schema/).
 
 ### Apache Iceberg Handler
-Stream CDC events directly into Apache Iceberg tables.
-*   **`IcebergChangeHandlerV2` (Recommended)**: Automatically infers schemas and manages table structures with native data types.
+Stream CDC events into Apache Iceberg tables.
+*   **`IcebergChangeHandlerV2` (Recommended)**: Infers schemas and manages table structures with native data types.
 *   **`IcebergChangeHandler`**: Appends raw change data (JSON) to source-equivalent tables using a fixed schema.
 
 ### dlt (data load tool) Handler
-*   **`DltChangeHandler`**: Integrates with the `dlt` library to load data into any supported destination (DuckDB, BigQuery, Snowflake, etc.).
+*   **`DltChangeHandler`**: Integrates with `dlt` to load data into any supported destination (DuckDB, BigQuery, Snowflake, etc.).
 
 ### Custom Handlers
-*   **`BasePythonChangeHandler`**: Extend this class to implement your own custom processing logic in pure Python.
+*   **`BasePythonChangeHandler`**: Extend this class to process raw `ChangeEvent` batches directly in Python (including schemaless JSON).
 
 ## Installation
 
@@ -47,22 +51,24 @@ You must have a **Java Development Kit (JDK) version 17 or newer** installed and
 ### Recommended Installation: From GitHub
 
 > [!WARNING]
-> Due to the package size (including `.jar` artifacts), new versions are no longer published to PyPI. The package on PyPI is outdated. It is **highly recommended to install the package directly from GitHub** to get the latest features and fixes.
+> Due to the package size (including `.jar` artifacts), new versions are no longer published to PyPI. The package on PyPI is outdated. Install the package directly from GitHub to get the latest features and fixes.
 
 You can install either the latest development version from the `main` branch or a specific, stable version from a release tag.
 
 **To install the latest development version:**
 ```shell
-# For core functionality
+# Core engine
 pip install "git+https://github.com/memiiso/pydbzengine.git"
 
-# With extras (e.g., iceberg, dlt)
+# With optional extras
+pip install "pydbzengine[arrow] @ git+https://github.com/memiiso/pydbzengine.git"    # Required for pydbzengine.schema
 pip install "pydbzengine[iceberg] @ git+https://github.com/memiiso/pydbzengine.git"
 pip install "pydbzengine[dlt] @ git+https://github.com/memiiso/pydbzengine.git"
+pip install "pydbzengine[airflow] @ git+https://github.com/memiiso/pydbzengine.git"
 pip install "pydbzengine[dev] @ git+https://github.com/memiiso/pydbzengine.git"
 
-# To install a specific version from a release tag (e.g., 3.4.1.0):
-pip install "pydbzengine @ git+https://github.com/memiiso/pydbzengine.git@3.4.1.0"
+# Specific release tag (e.g., 3.6.3.0):
+pip install "pydbzengine @ git+https://github.com/memiiso/pydbzengine.git@3.6.3.0"
 ```
 
 ### Alternative: From PyPI (Outdated Version)
@@ -70,7 +76,7 @@ pip install "pydbzengine @ git+https://github.com/memiiso/pydbzengine.git@3.4.1.
 An older version is available on PyPI. You can install it, but be aware that it lacks recent features and updates.
 
 ```shell
-# For core functionality
+# Core engine
 pip install pydbzengine
 
 # With extras
@@ -80,60 +86,79 @@ pip install "pydbzengine[dlt]"
 
 ## How to Use
 
-### Consume events With custom Python consumer
+### Schema-Aware Consumer (Apache Arrow)
 
-1. First install the packages: `pip install "pydbzengine[dev] @ git+https://github.com/memiiso/pydbzengine.git"`
-2. Second, extend `BasePythonChangeHandler` and implement your Python consuming logic. See the example below:
+Install with `pip install "pydbzengine[arrow] @ git+https://github.com/memiiso/pydbzengine.git"` and subclass `SchemaAwareChangeHandler` to receive compiled `TableSchema`, `SchemaDiff`, and `TableBatch` (`pyarrow.Table`) objects:
 
 ```python
-from typing import List
-from pydbzengine import ChangeEvent, BasePythonChangeHandler, DebeziumEngine
+from pydbzengine import DebeziumEngine
+from pydbzengine.schema import (
+    SchemaAwareChangeHandler,
+    SchemaDiff,
+    TableBatch,
+    TableSchema,
+)
 
 
-class PrintChangeHandler(BasePythonChangeHandler):
-    """
-    A custom change event handler class.
+class ArrowConsumer(SchemaAwareChangeHandler):
+    def on_table_created(self, schema: TableSchema) -> None:
+        self.logger.info("Table %s created: %s", schema.destination, schema.arrow_schema.names)
 
-    This class processes batches of Debezium change events received from the engine.
-    The `handleJsonBatch` method is where you implement your logic for consuming
-    and processing these events.  Currently, it prints basic information about
-    each event to the console.
-    """
+    def on_schema_evolved(
+        self, new_schema: TableSchema, old_schema: TableSchema, diff: SchemaDiff
+    ) -> None:
+        self.logger.info(
+            "Schema evolved on %s (compatible=%s, added=%s)",
+            new_schema.destination,
+            diff.is_compatible,
+            [f.name for f in diff.added_fields],
+        )
 
-    def handleJsonBatch(self, records: List[ChangeEvent]):
-        """
-        Handles a batch of Debezium change events.
+    def handle_table_batch(self, batch: TableBatch) -> None:
+        arrow_table = batch.to_arrow()
+        self.logger.info("Received %d rows for %s", arrow_table.num_rows, batch.destination)
 
-        This method is called by the Debezium engine with a list of ChangeEvent objects.
-        Change this method to implement your desired processing logic.  For example,
-        you might parse the event data, transform it, and load it into a database or
-        other destination.
 
-        Args:
-            records: A list of ChangeEvent objects representing the changes captured by Debezium.
-        """
-        print(f"Received {len(records)} records")
+props = {
+    "name": "engine",
+    "snapshot.mode": "initial_only",
+    # Add Debezium connector properties (connector.class, database.*, offset.storage, ...)
+}
+
+# Works identically with format="json" (default, schemas enabled) or format="connect".
+engine = DebeziumEngine(properties=props, handler=ArrowConsumer())
+engine.run()
+```
+
+### Raw Custom Python Consumer
+
+Extend `BasePythonChangeHandler` and implement `handle_batch` to consume raw `ChangeEvent` batches directly:
+
+```python
+from pydbzengine import BasePythonChangeHandler, ChangeEvent, DebeziumEngine
+
+
+class LogChangeHandler(BasePythonChangeHandler):
+    def handle_batch(self, records: list[ChangeEvent]) -> int:
         for record in records:
-            print(f"destination: {record.destination()}")
-            print(f"key: {record.key()}")
-            print(f"value: {record.value()}")
-        print("--------------------------------------")
+            self.logger.info(
+                "destination=%s key=%s value=%s",
+                record.destination(),
+                record.key(),
+                record.value(),
+            )
+        return len(records)
 
 
 if __name__ == "__main__":
     props = {
         "name": "engine",
         "snapshot.mode": "initial_only",
-        # Add further Debezium connector configuration properties here.  For example:
-        # "connector.class": "io.debezium.connector.mysql.MySqlConnector",
-        # "database.hostname": "your_database_host",
-        # "database.port": "3306",
+        # Add Debezium connector properties (connector.class, database.*, offset.storage, ...)
     }
 
-    # Create a DebeziumEngine instance (default format is "json", or specify format="connect").
-    engine = DebeziumEngine(properties=props, handler=PrintChangeHandler())
-
-    # Start the Debezium engine to begin consuming and processing change events.
+    # Default format is "json"; pass format="connect" for Kafka Connect SourceRecords.
+    engine = DebeziumEngine(properties=props, handler=LogChangeHandler())
     engine.run()
 ```
 ### Consume events to Apache Iceberg

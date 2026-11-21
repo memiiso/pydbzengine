@@ -21,24 +21,15 @@ Downstream consumers that extend `SchemaAwareChangeHandler` receive compiled `Ta
 
 ---
 
-## Public Surface & Module Layout
+## Public Surface
 
-Consumer code should import from the top-level `pydbzengine.schema` package, which exports 11 public symbols:
+Import consumer-facing types from `pydbzengine.schema`:
 
 | Category | Public Exports (`from pydbzengine.schema import ...`) |
 | :--- | :--- |
 | **Domain Models** | `TableSchema`, `SchemaDiff`, `ChangeRecord`, `TableBatch`, `ChangeBatch`, `EventKind` |
 | **Converters & Formats** | `EventConverter`, `ConnectEventConverter`, `JsonEventConverter`, `EventFormat` |
 | **Consumer Base Class** | `SchemaAwareChangeHandler` |
-
-Internal modules are cleanly separated by responsibility and wire format under `pydbzengine.schema`:
-
-- `pydbzengine.schema.models`: Pure Arrow domain models (`EventKind`, `TableSchema`, `SchemaDiff`, `ChangeRecord`, `TableBatch` with Arrow PyCapsule `__arrow_c_stream__`, `ChangeBatch`).
-- `pydbzengine.schema.types`: Shared Arrow type resolution and pure-Python value normalizers (decimals, ISO temporals, bounds) with zero JSON or JVM dependencies.
-- `pydbzengine.schema.converter`: Abstract `EventConverter` base class owning one-pass schema compilation, caching, key resolution, and `ChangeBatch` assembly.
-- `pydbzengine.schema.connect`: `ConnectEventConverter` and Connect-only Java schema/value decoders.
-- `pydbzengine.schema.json`: `JsonEventConverter` and JSON-only envelope/schema/value decoders.
-- `pydbzengine.schema.consumer`: `SchemaAwareChangeHandler` lifecycle consumer base class.
 
 ---
 
@@ -82,8 +73,8 @@ At initialization, `DebeziumEngine` normalizes connector `properties` and `forma
 
 | Converter Class | Resolution Condition | Execution Behavior |
 | :--- | :--- | :--- |
-| **`ConnectEventConverter`** | `format="connect"` (`EventFormat.CONNECT`) | Consumes in-memory Java Kafka Connect `SourceRecord` objects. Compiles `valueSchema()` and `keySchema()` once per destination (caching strong references to the Java schemas) and converts values in a single pass via `convert_connect()`. |
-| **`JsonEventConverter`** | `format="json"` and `schemas_enabled=True` (*default*) | Consumes JSON records containing explicit `{"schema": ..., "payload": ...}` envelopes. Compiles the embedded schemas once per destination and converts payloads in a single pass via `convert_json()`. |
+| **`ConnectEventConverter`** | `format="connect"` (`EventFormat.CONNECT`) | Consumes in-memory Java Kafka Connect `SourceRecord` objects. Compiles `valueSchema()` and `keySchema()` once per destination and converts records in a single pass via `convert()` / `convert_event()`. |
+| **`JsonEventConverter`** | `format="json"` and `schemas_enabled=True` (*default*) | Consumes JSON records containing explicit `{"schema": ..., "payload": ...}` envelopes. Compiles embedded schemas once per destination and converts payloads in a single pass via `convert()` / `convert_event()`. |
 
 If `format="json"` is configured with `schemas_enabled=False` (or `converter.schemas.enable=false`), `EventConverter.from_config()` raises `ValueError` immediately rather than falling back to schema inference.
 
@@ -106,16 +97,16 @@ When `ConnectEventConverter` or `JsonEventConverter` encounters a destination fo
 
 ```mermaid
 flowchart LR
-    WIRE["Wire Schema\n(Java Connect Schema or JSON dict)"] -->|"Format-specific\n_inspect_schema()"| COMP["EventConverter._compile_field()\n+ Shared types.py Arrow Mapping"]
-    COMP --> DEC["Compiled pa.Schema +\nSingle-Format Value Decoders"]
+    WIRE["Wire Schema\n(Java Connect Schema or JSON dict)"] --> COMP["Schema Compilation\n& Arrow Type Mapping"]
+    COMP --> DEC["Compiled pa.Schema +\nValue & Key Decoders"]
     DEC --> TS["TableSchema\n(Cached per Destination)"]
 ```
 
-1. **Format Inspection (`connect.py` / `json.py`)**: Extracts each field's wire type, logical type name, nullability, doc, and parameters strictly for its format.
-2. **Arrow Mapping & Decoder Binding (`converter.py` + `types.py`)**: Maps Debezium/Connect primitive, temporal, decimal, and nested container types to `pyarrow.Field` descriptors (preserving `doc` and `debezium.logical_type` in Arrow metadata) and binds lightweight single-format decoder callables.
-3. **Destination Caching (`models.py`)**: Builds an immutable `TableSchema` (`destination`, `arrow_schema`, `key_fields`, `key_schema`) paired internally in the converter cache with the compiled value and key decoders. Subsequent events with an equal wire schema reuse the cached entry without recompiling.
+1. **Schema Inspection**: Reads each field's Connect wire type, Debezium logical type name, nullability, doc, and parameters.
+2. **Arrow Mapping & Decoder Binding**: Maps primitive, temporal, decimal, and nested container types to `pyarrow.Field` descriptors (preserving `doc` and `debezium.logical_type` in Arrow field metadata) and compiles format-specific value decoders.
+3. **Destination Caching**: Builds an immutable `TableSchema` (`destination`, `arrow_schema`, `key_fields`, `key_schema`) cached per destination alongside its decoders. Subsequent events with an equal wire schema reuse the cached entry without recompiling, and tombstones never evict active table schemas.
 
 ## Next Steps
 
 - **[Domain Models & Types](models.md)**: Reference for `TableSchema`, `SchemaDiff`, `ChangeRecord`, `TableBatch`, `ChangeBatch`, and the Debezium-to-Arrow type mappings.
-- **[Schema-Aware Consumer & Examples](consumer.md)**: Lifecycle hooks on `SchemaAwareChangeHandler` and complete implementations including a custom Snowflake CDC consumer.
+- **[Schema-Aware Consumer & Examples](consumer.md)**: Lifecycle hooks on `SchemaAwareChangeHandler` and end-to-end consumer examples.

@@ -90,8 +90,8 @@ Structural comparison result between a previous and new `TableSchema` (or `pa.Sc
 | `key_fields_changed` | `bool` | `True` if `TableSchema.key_fields` changed (always `False` when diffing against a raw `pa.Schema`). |
 | `key_schema_changed` | `bool` | `True` if `TableSchema.key_schema` changed (always `False` when diffing against a raw `pa.Schema`). |
 | `has_changes` | `bool` | `True` if any fields were added, removed, changed, reordered, or if key metadata changed. |
-| `is_additive` | `bool` | `True` when there are no removals, reordering, or key changes, at least one addition occurred, all top-level added fields are nullable, and any changed field is a purely additive nested struct evolution (preserving subfield order and adding only nullable subfields). Recognizes new nullable columns inside Debezium envelope `before`/`after` structs as additive. |
-| `is_compatible` | `bool` | `True` when no fields were removed, key metadata is unchanged, no non-nullable fields were added (top-level or nested inside structs/lists/maps), no lossy promotions occurred (`int64`/`uint64`/`decimal` to float), and PyArrow permissive schema unification matches the new schema (supports lossless widenings such as `int32 -> int64`, `float32 -> float64`, decimal precision/scale widening, temporal unit widening, nullability widening, column reordering, and compatible nested struct evolution). |
+| `is_additive` | `bool` | `True` when changes consist solely of new nullable fields (top-level or nested inside structs such as `before`/`after`), with no removals, reordering, or key changes. |
+| `is_compatible` | `bool` | `True` when no fields were removed, key metadata is unchanged, all new fields (top-level or nested) are nullable, no lossy promotions occur (`int64`/`uint64`/`decimal` to float), and PyArrow permissive schema unification matches the new schema (supports lossless widenings such as `int32 -> int64`, `float32 -> float64`, decimal/temporal widening, nullability widening, and reordering). |
 
 ### `ChangeRecord` & `EventKind`
 `ChangeRecord` represents a single converted CDC event:
@@ -105,7 +105,7 @@ Structural comparison result between a previous and new `TableSchema` (or `pa.Sc
 | `partition` | `int \| None` | Source partition number, if present. |
 | `kind` | `EventKind` | Event classification: `DATA`, `HEARTBEAT`, `SCHEMA_CHANGE`, or `TOMBSTONE`. |
 
-`EventKind.classify(destination, field_names, heartbeat_prefix, *, schema_name=None)` classifies each event deterministically:
+Each event is classified into one of four `EventKind` values:
 
 - **`EventKind.TOMBSTONE`** (`"tombstone"`): `value` is `None` (delete tombstone carrying only `key`).
 - **`EventKind.HEARTBEAT`** (`"heartbeat"`): Destination starts with `heartbeat_prefix` or wire schema ends with `io.debezium.connector.common.Heartbeat`.
@@ -116,15 +116,24 @@ In default Debezium envelope mode, access fields directly on `record.value` (for
 
 ### `TableBatch` & `ChangeBatch`
 - **`ChangeBatch`**: Holds `records: tuple[ChangeRecord, ...]` in arrival order (supports `len()`, `bool()`, and iteration).
-  - `batch.of_kind(kind: EventKind, *more: EventKind) -> ChangeBatch`: Returns a composable sub-`ChangeBatch` containing only records matching the given `EventKind`(s) in arrival order. Fails fast with `TypeError` on non-`EventKind` arguments.
+  - `batch.of_kind(kind: EventKind, *more: EventKind) -> ChangeBatch`: Returns a sub-`ChangeBatch` containing only records matching the given `EventKind`(s) in arrival order.
   - `batch.group_by_kind() -> dict[EventKind, ChangeBatch]`: Partitions records in a single pass into non-empty sub-batches keyed by `EventKind`.
   - `batch.group_by_destination() -> dict[str, ChangeBatch]`: Groups records in a single pass into sub-batches keyed by `destination`, preserving arrival order (chains naturally with `of_kind()`, e.g., `batch.of_kind(EventKind.TOMBSTONE).group_by_destination()`).
-  - `batch.to_table_batches() -> tuple[TableBatch, ...]`: Groups `EventKind.DATA` records per destination into homogeneous `TableBatch` runs, splitting a destination's batch only when its `TableSchema` changes within the batch (non-data records such as tombstones, DDLs, and heartbeats are ignored and do not fragment `DATA` runs).
+  - `batch.to_table_batches() -> tuple[TableBatch, ...]`: Groups `EventKind.DATA` records per destination into homogeneous `TableBatch` runs, splitting a destination's batch only when its `TableSchema` changes within the batch (non-data records such as tombstones, DDLs, and heartbeats do not fragment `DATA` runs).
 - **`TableBatch`**: Groups consecutive `EventKind.DATA` records for one destination sharing a single `TableSchema` (supports `len()` and iteration).
   - `batch.destination -> str`: Shortcut for `batch.schema.destination`.
   - `batch.rows -> list[dict[str, Any]]`: Converted `record.value` dictionaries matching `schema.arrow_schema`.
-  - `batch.to_arrow(target_schema: pa.Schema | None = None) -> pa.Table`: Materializes a `pyarrow.Table` from `batch.rows` using `schema.arrow_schema`. When `target_schema` is provided and differs from `schema.arrow_schema`, `to_arrow()` aligns/reorders top-level columns, casts existing columns via PyArrow (including temporal unit scaling and, with `pyarrow>=19.0.0`, nested struct evolution on `before`/`after` fields for nullable subfield additions, drops, and widenings preserving surviving subfield order; subfield reordering requires `pyarrow>=21.0.0`), fills missing nullable target columns with nulls, and recursively validates target nullability across top-level columns, structs, lists, and maps.
-  - `batch.__arrow_c_stream__(requested_schema=None)`: Implements the Arrow PyCapsule Interface so `TableBatch` can be passed directly into DuckDB, Polars, PyIceberg, DataFusion, or `pyarrow.table(batch)`.
+  - `batch.to_arrow(target_schema: pa.Schema | None = None) -> pa.Table`: Materializes a `pyarrow.Table` from `batch.rows` using `schema.arrow_schema`. When `target_schema` is provided and differs from `schema.arrow_schema`, aligns/reorders columns, casts existing columns via PyArrow (including temporal unit scaling and nested struct evolution on `before`/`after` fields; subfield reordering requires `pyarrow>=21.0.0`), fills missing nullable target columns with nulls, and recursively validates target nullability.
+  - `batch.__arrow_c_stream__(requested_schema=None)`: Implements the Arrow PyCapsule Interface for direct interop with Arrow-native engines without manual conversion:
+
+```python
+import pyarrow as pa
+
+# Pass TableBatch directly to any Arrow PyCapsule consumer:
+arrow_table = pa.table(batch)
+# duckdb.sql("SELECT * FROM batch")
+# polars.from_arrow(batch)
+```
 
 ---
 

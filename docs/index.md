@@ -26,7 +26,7 @@ from pydbzengine import BasePythonChangeHandler, ChangeEvent, DebeziumEngine
 class LogChangeHandler(BasePythonChangeHandler):
     def handle_batch(self, records: list[ChangeEvent]) -> int:
         for record in records:
-            self.log.info(
+            self.logger.info(
                 "Event on %s: key=%s, value=%s",
                 record.destination(),
                 record.key(),

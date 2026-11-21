@@ -6,28 +6,30 @@ You must have a **Java Development Kit (JDK) version 17 or newer** installed and
 
 ## Recommended Installation: From GitHub
 
-> [!WARNING]
-> Due to the package size (including `.jar` artifacts), new versions are no longer published to PyPI. The version on PyPI is outdated. It is **strongly recommended to install the package directly from GitHub** to get the latest features and fixes.
+!!! warning
+    Due to the package size (including `.jar` artifacts), new versions are no longer published to PyPI. The version on PyPI is outdated. Install the package directly from GitHub to get the latest features and fixes.
 
 You can install either the latest development version from the `main` branch or a specific, stable version from a release tag.
 
 ### Latest Development Version
 
 ```shell
-# For core functionality
+# Core engine
 pip install "git+https://github.com/memiiso/pydbzengine.git"
 
-# With extras (e.g., iceberg, dlt)
+# With optional extras
+pip install "pydbzengine[arrow] @ git+https://github.com/memiiso/pydbzengine.git"    # Required for pydbzengine.schema
 pip install "pydbzengine[iceberg] @ git+https://github.com/memiiso/pydbzengine.git"
 pip install "pydbzengine[dlt] @ git+https://github.com/memiiso/pydbzengine.git"
+pip install "pydbzengine[airflow] @ git+https://github.com/memiiso/pydbzengine.git"
 ```
 
 ### Specific Version
 
-To install a specific version from a release tag (e.g., `3.4.1.0`):
+To install a specific version from a release tag (e.g., `3.6.3.0`):
 
 ```shell
-pip install "pydbzengine @ git+https://github.com/memiiso/pydbzengine.git@3.4.1.0"
+pip install "pydbzengine @ git+https://github.com/memiiso/pydbzengine.git@3.6.3.0"
 ```
 
 ## Alternative: From PyPI (Outdated Version)

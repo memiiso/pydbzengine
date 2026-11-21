@@ -1,6 +1,6 @@
 # How it Works
 
-`pydbzengine` provides a seamless bridge between Python and the Java-based Debezium Engine.
+`pydbzengine` bridges Python applications and the Java-based Debezium Embedded Engine.
 
 ## Architecture
 
@@ -14,7 +14,7 @@ At its core, `pydbzengine` leverages [JPype](https://jpype.readthedocs.io/en/sta
 1.  **Configuration**: You define your Debezium configuration using a standard Python dictionary or Java `Properties`.
 2.  **Engine Initialization**: The `DebeziumEngine` is initialized with these properties, a Python-based handler, and the chosen format (`"json"` or `"connect"`).
 3.  **Event Capture**: The Java Debezium Engine captures CDC events from your source database.
-4.  **Batch Processing**: Instead of processing events one by one in Java, `pydbzengine` passes batches of events to your Python handler's `handleJsonBatch` method.
+4.  **Batch Processing**: Instead of processing events one by one in Java, `pydbzengine` passes batches of events to your Python handler's `handle_batch` method (`handleJsonBatch` is also supported for backward compatibility).
 5.  **Python Logic**: Your custom logic (or built-in handlers like Iceberg/dlt) processes the `ChangeEvent` objects in pure Python.
 
 ## Performance Considerations
