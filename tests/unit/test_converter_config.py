@@ -344,6 +344,10 @@ class TestEventConverterConfig(unittest.TestCase):
             DebeziumConfig(
                 {"key.converter": "org.apache.kafka.connect.storage.StringConverter"}
             )
+        with self.assertRaisesRegex(TypeError, "Expected EventFormat or str"):
+            DebeziumConfig({"value.converter": None})
+        with self.assertRaisesRegex(TypeError, "Expected EventFormat or str"):
+            DebeziumConfig({"key.converter": None})
 
     def test_debezium_config_mapping_jproperties_and_immutability(self) -> None:
         from pydbzengine.engine.jvm import ensure_jvm_started

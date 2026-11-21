@@ -9,29 +9,6 @@ from pydbzengine.engine.base import EventFormat
 __all__ = ["DebeziumConfig"]
 
 
-def _parse_bool(value: Any, key: str) -> bool:
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, str):
-        norm = value.strip().lower()
-        if norm in ("true", "false"):
-            return norm == "true"
-    raise ValueError(f"Invalid boolean value for {key}: {value!r}")
-
-
-def _require_non_empty_str(value: Any, label: str) -> str:
-    if not isinstance(value, str) or not value.strip():
-        raise ValueError(f"{label} must be a non-empty string, got {value!r}")
-    return value.strip()
-
-
-def _first_present(properties: Mapping[str, Any], keys: tuple[str, ...]) -> Any | None:
-    for key in keys:
-        if key in properties:
-            return properties[key]
-    return None
-
-
 class DebeziumConfig:
     """
     Immutable configuration value object for DebeziumEngine and change handlers.
@@ -110,12 +87,17 @@ class DebeziumConfig:
             if "converter.class" in properties
             else None
         )
-        raw_val = _first_present(
-            properties, ("value.converter", "value.converter.class")
-        )
-        val_fmt = EventFormat.resolve_from(raw_val) if raw_val is not None else None
-        raw_key = _first_present(properties, ("key.converter", "key.converter.class"))
-        key_fmt = EventFormat.resolve_from(raw_key) if raw_key is not None else None
+        val_fmt: EventFormat | None = None
+        for key in ("value.converter", "value.converter.class"):
+            if key in properties:
+                val_fmt = EventFormat.resolve_from(properties[key])
+                break
+
+        key_fmt: EventFormat | None = None
+        for key in ("key.converter", "key.converter.class"):
+            if key in properties:
+                key_fmt = EventFormat.resolve_from(properties[key])
+                break
 
         if val_fmt is not None and key_fmt is not None and val_fmt is not key_fmt:
             raise ValueError(
@@ -142,6 +124,22 @@ class DebeziumConfig:
 
         return prop_fmt if prop_fmt is not None else EventFormat.JSON
 
+    @staticmethod
+    def _parse_bool(value: Any, key: str) -> bool:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            norm = value.strip().lower()
+            if norm in ("true", "false"):
+                return norm == "true"
+        raise ValueError(f"Invalid boolean value for {key}: {value!r}")
+
+    @staticmethod
+    def _require_non_empty_str(value: Any, label: str) -> str:
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(f"{label} must be a non-empty string, got {value!r}")
+        return value.strip()
+
     @classmethod
     def _resolve_heartbeat_prefix(
         cls,
@@ -149,14 +147,14 @@ class DebeziumConfig:
         heartbeat_prefix: str | None,
     ) -> str:
         prop_prefix = (
-            _require_non_empty_str(
+            cls._require_non_empty_str(
                 properties["topic.heartbeat.prefix"], "topic.heartbeat.prefix"
             )
             if "topic.heartbeat.prefix" in properties
             else None
         )
         if heartbeat_prefix is not None:
-            explicit = _require_non_empty_str(heartbeat_prefix, "heartbeat_prefix")
+            explicit = cls._require_non_empty_str(heartbeat_prefix, "heartbeat_prefix")
             if prop_prefix is not None and prop_prefix != explicit:
                 raise ValueError(
                     f"Conflicting heartbeat_prefix configuration: explicit {explicit!r} "
@@ -165,8 +163,9 @@ class DebeziumConfig:
             return explicit
         return prop_prefix if prop_prefix is not None else cls.DEFAULT_HEARTBEAT_PREFIX
 
-    @staticmethod
+    @classmethod
     def _resolve_schemas_enabled(
+        cls,
         properties: Mapping[str, Any],
         event_format: EventFormat,
         schemas_enabled: bool | None,
@@ -183,14 +182,14 @@ class DebeziumConfig:
             return True
 
         conv = (
-            _parse_bool(
+            cls._parse_bool(
                 properties["converter.schemas.enable"], "converter.schemas.enable"
             )
             if "converter.schemas.enable" in properties
             else None
         )
         top = (
-            _parse_bool(properties["schemas.enable"], "schemas.enable")
+            cls._parse_bool(properties["schemas.enable"], "schemas.enable")
             if "schemas.enable" in properties
             else None
         )
@@ -202,7 +201,7 @@ class DebeziumConfig:
         general = conv if conv is not None else top
 
         val = (
-            _parse_bool(
+            cls._parse_bool(
                 properties["value.converter.schemas.enable"],
                 "value.converter.schemas.enable",
             )
@@ -210,7 +209,7 @@ class DebeziumConfig:
             else general
         )
         key = (
-            _parse_bool(
+            cls._parse_bool(
                 properties["key.converter.schemas.enable"],
                 "key.converter.schemas.enable",
             )
