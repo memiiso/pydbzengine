@@ -77,8 +77,8 @@ pip install "pydbzengine[dlt] @ git+https://github.com/memiiso/pydbzengine.git"
 pip install "pydbzengine[airflow] @ git+https://github.com/memiiso/pydbzengine.git"
 pip install "pydbzengine[dev] @ git+https://github.com/memiiso/pydbzengine.git"
 
-# Specific release tag (e.g., 3.6.3.0):
-pip install "pydbzengine @ git+https://github.com/memiiso/pydbzengine.git@3.6.3.0"
+# Specific release tag (e.g., 3.7.1.0):
+pip install "pydbzengine @ git+https://github.com/memiiso/pydbzengine.git@3.7.1.0"
 ```
 
 ## How to Use

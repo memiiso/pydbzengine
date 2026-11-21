@@ -39,8 +39,8 @@ pip install "pydbzengine[airflow] @ git+https://github.com/memiiso/pydbzengine.g
 
 ### Specific Release Tag
 
-To install a specific version from a GitHub release tag (e.g., `3.6.3.0`):
+To install a specific version from a GitHub release tag (e.g., `3.7.1.0`):
 
 ```shell
-pip install "pydbzengine @ git+https://github.com/memiiso/pydbzengine.git@3.6.3.0"
+pip install "pydbzengine @ git+https://github.com/memiiso/pydbzengine.git@3.7.1.0"
 ```
