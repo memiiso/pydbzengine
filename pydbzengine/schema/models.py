@@ -258,7 +258,7 @@ class TableSchema:
     def table_name(self) -> str:
         return self.destination.rsplit(".", 1)[-1]
 
-    def diff(self, previous: TableSchema | pa.Schema) -> SchemaDiff:
+    def diff_from(self, previous: TableSchema | pa.Schema) -> SchemaDiff:
         """Computes the structural difference from `previous` schema to `self`."""
         old_pa = (
             previous.arrow_schema if isinstance(previous, TableSchema) else previous
@@ -389,69 +389,69 @@ class ChangeBatch:
 
     records: tuple[ChangeRecord, ...] = ()
 
-    @property
-    def data_records(self) -> tuple[ChangeRecord, ...]:
-        return self.of_kind(EventKind.DATA)
+    def of_kind(self, kind: EventKind, *more: EventKind) -> ChangeBatch:
+        """Returns a sub-batch containing only records matching the given EventKind(s) in arrival order."""
+        kinds = (kind, *more)
+        for k in kinds:
+            if not isinstance(k, EventKind):
+                raise TypeError(f"Expected EventKind, got {type(k).__name__}: {k!r}")
+        if not more:
+            return ChangeBatch(records=tuple(r for r in self.records if r.kind is kind))
+        allowed = frozenset(kinds)
+        return ChangeBatch(records=tuple(r for r in self.records if r.kind in allowed))
 
-    def of_kind(self, kind: EventKind) -> tuple[ChangeRecord, ...]:
-        return tuple(r for r in self.records if r.kind is kind)
+    def group_by_kind(self) -> dict[EventKind, ChangeBatch]:
+        """Partitions records in a single pass into non-empty sub-batches keyed by EventKind."""
+        grouped: dict[EventKind, list[ChangeRecord]] = {}
+        for record in self.records:
+            grouped.setdefault(record.kind, []).append(record)
+        return {
+            kind: ChangeBatch(records=tuple(recs)) for kind, recs in grouped.items()
+        }
 
-    def destination_events(self) -> tuple[TableBatch | ChangeRecord, ...]:
+    def group_by_destination(self) -> dict[str, ChangeBatch]:
+        """Groups records in a single pass into sub-batches keyed by destination, preserving arrival order."""
+        grouped: dict[str, list[ChangeRecord]] = {}
+        for record in self.records:
+            grouped.setdefault(record.destination, []).append(record)
+        return {
+            dest: ChangeBatch(records=tuple(recs)) for dest, recs in grouped.items()
+        }
+
+    def to_table_batches(self) -> tuple[TableBatch, ...]:
         """
-        Segments the batch into causal per-destination TableBatch runs and
-        lifecycle ChangeRecords (TOMBSTONE, SCHEMA_CHANGE, HEARTBEAT).
+        Groups DATA records per destination into homogeneous TableBatch runs.
+
+        Splits a destination's batch only when its TableSchema changes within
+        the batch; non-DATA records (TOMBSTONE, SCHEMA_CHANGE, HEARTBEAT) are
+        ignored and do not fragment DATA runs.
         """
-        output: list[TableBatch | ChangeRecord] = []
-        streams: dict[str, list[TableBatch | ChangeRecord]] = {}
+        completed: dict[str, list[TableBatch]] = {}
         open_runs: dict[str, tuple[TableSchema, list[ChangeRecord]]] = {}
-        heartbeats: list[ChangeRecord] = []
-
-        def flush_destination(dest: str) -> None:
-            run = open_runs.pop(dest, None)
-            if run is not None:
-                streams.setdefault(dest, []).append(
-                    TableBatch(schema=run[0], records=tuple(run[1]))
-                )
-
-        def flush_all() -> None:
-            for dest in list(open_runs):
-                flush_destination(dest)
-            for items in streams.values():
-                output.extend(items)
-            streams.clear()
 
         for record in self.records:
-            if record.kind is EventKind.DATA:
-                if record.schema is None:
-                    raise ValueError(
-                        f"Data ChangeRecord for destination '{record.destination}' is missing a TableSchema."
+            if record.kind is not EventKind.DATA:
+                continue
+            if record.schema is None:
+                raise ValueError(
+                    f"Data ChangeRecord for destination '{record.destination}' is missing a TableSchema."
+                )
+            dest = record.destination
+            completed.setdefault(dest, [])
+            current = open_runs.get(dest)
+            if current is not None and current[0] == record.schema:
+                current[1].append(record)
+            else:
+                if current is not None:
+                    completed[dest].append(
+                        TableBatch(schema=current[0], records=tuple(current[1]))
                     )
-                dest = record.destination
-                streams.setdefault(dest, [])
-                current = open_runs.get(dest)
-                if current is not None and current[0] == record.schema:
-                    current[1].append(record)
-                else:
-                    flush_destination(dest)
-                    open_runs[dest] = (record.schema, [record])
-            elif record.kind is EventKind.TOMBSTONE:
-                dest = record.destination
-                flush_destination(dest)
-                streams.setdefault(dest, []).append(record)
-            elif record.kind is EventKind.SCHEMA_CHANGE:
-                flush_all()
-                output.append(record)
-            elif record.kind is EventKind.HEARTBEAT:
-                heartbeats.append(record)
+                open_runs[dest] = (record.schema, [record])
 
-        flush_all()
-        output.extend(heartbeats)
-        return tuple(output)
+        for dest, (schema, recs) in open_runs.items():
+            completed[dest].append(TableBatch(schema=schema, records=tuple(recs)))
 
-    def table_batches(self) -> tuple[TableBatch, ...]:
-        return tuple(
-            item for item in self.destination_events() if isinstance(item, TableBatch)
-        )
+        return tuple(tb for batches in completed.values() for tb in batches)
 
     def __iter__(self) -> Iterator[ChangeRecord]:
         return iter(self.records)

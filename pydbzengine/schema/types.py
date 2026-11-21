@@ -31,7 +31,6 @@ __all__ = [
     "quantize_decimal",
     "resolve_decimal_params",
     "resolve_scalar_arrow_type",
-    "scale_int_to_decimal",
     "scale_ms_to_unit",
     "validate_decimal_bounds",
     "validate_variable_scale",
@@ -54,6 +53,7 @@ TIME_MAX_UNITS: dict[TimeUnit, int] = {
     "us": 86_400_000_000,
     "ns": 86_400_000_000_000,
 }
+_MS_SCALE_FACTORS: dict[TimeUnit, int] = {"ms": 1, "us": 1_000, "ns": 1_000_000}
 
 PRIMITIVE_ARROW_TYPES: dict[str, pa.DataType] = {
     "int8": pa.int8(),
@@ -102,11 +102,19 @@ def validate_variable_scale(scale: int) -> int:
 
 
 def validate_decimal_bounds(precision: int, scale: int) -> None:
-    if isinstance(precision, bool) or not (1 <= precision <= 38):
+    if (
+        isinstance(precision, bool)
+        or not isinstance(precision, int)
+        or not (1 <= precision <= 38)
+    ):
         raise ValueError(
             f"Decimal precision must be between 1 and 38, got {precision!r}"
         )
-    if isinstance(scale, bool) or not (0 <= scale <= precision):
+    if (
+        isinstance(scale, bool)
+        or not isinstance(scale, int)
+        or not (0 <= scale <= precision)
+    ):
         raise ValueError(
             f"Decimal scale ({scale!r}) must be between 0 and precision ({precision})"
         )
@@ -118,6 +126,9 @@ def resolve_decimal_params(
     require_scale: bool,
     default_variable_scale: int,
 ) -> tuple[int, int]:
+    if not require_scale:
+        validate_variable_scale(default_variable_scale)
+
     if "connect.decimal.precision" in params:
         precision = int(params["connect.decimal.precision"])
     elif "precision" in params:
@@ -130,7 +141,7 @@ def resolve_decimal_params(
     elif require_scale:
         raise ValueError("Missing required 'scale' parameter in Decimal schema")
     else:
-        scale = min(default_variable_scale, max(precision, 0))
+        scale = min(default_variable_scale, precision)
 
     validate_decimal_bounds(precision, scale)
     return precision, scale
@@ -200,7 +211,7 @@ def build_arrow_field(
         raise ValueError(f"Field name must be a non-empty string, got {name!r}")
     if not isinstance(nullable, bool):
         raise ValueError(
-            f"Expected bool for schema 'optional' in field '{name}', got {type(nullable).__name__}"
+            f"Expected bool for 'nullable' in field '{name}', got {type(nullable).__name__}"
         )
     metadata: dict[bytes, bytes] = {}
     if doc:
@@ -225,6 +236,8 @@ def build_map_arrow_type(key_field: pa.Field, value_field: pa.Field) -> pa.MapTy
 
 
 def int_bounds(arrow_type: pa.DataType) -> tuple[int, int]:
+    if not pa.types.is_integer(arrow_type):
+        raise ValueError(f"Expected Arrow integer type, got {arrow_type}")
     bits = arrow_type.bit_width
     if pa.types.is_signed_integer(arrow_type):
         return -(1 << (bits - 1)), (1 << (bits - 1)) - 1
@@ -267,47 +280,34 @@ def check_timestamp_epoch(val: int, unit: TimeUnit) -> int:
 
 
 def scale_ms_to_unit(ms: int, unit: TimeUnit) -> int:
-    if unit == "ms":
-        return ms
-    if unit == "us":
-        return ms * 1_000
-    return ms * 1_000_000
-
-
-def scale_int_to_decimal(int_val: int, scale: int) -> Decimal:
-    if int_val == 0:
-        return Decimal(0)
-    tup = Decimal(int_val).as_tuple()
-    return Decimal((tup.sign, tup.digits, -scale))
+    return ms * _MS_SCALE_FACTORS[unit]
 
 
 def bytes_to_decimal(raw_bytes: bytes, scale: int) -> Decimal:
     if not raw_bytes:
         raise ValueError("Cannot decode empty bytes as Decimal")
-    return scale_int_to_decimal(
-        int.from_bytes(raw_bytes, byteorder="big", signed=True), scale
-    )
+    int_val = int.from_bytes(raw_bytes, byteorder="big", signed=True)
+    if int_val == 0:
+        return Decimal((0, (0,), -scale))
+    tup = Decimal(int_val).as_tuple()
+    return Decimal((tup.sign, tup.digits, -scale))
 
 
 def quantize_decimal(dec: Decimal, scale: int, precision: int = 38) -> Decimal:
     tup = dec.as_tuple()
     if not isinstance(tup.exponent, int):
         raise ValueError(f"Cannot quantize non-finite Decimal value: {dec!r}")
-    if dec == 0:
-        return Decimal((0, (0,), -scale))
-    if -tup.exponent > scale:
+    if tup.exponent != -scale:
         try:
             dec = dec.quantize(Decimal((0, (1,), -scale)), context=_DECIMAL128_CTX)
         except decimal.InvalidOperation as err:
             raise ValueError(
-                f"Decimal value {dec!r} exceeds maximum precision ({precision})"
+                f"Decimal value {dec!r} exceeds configured precision ({precision}, scale={scale})"
             ) from err
         tup = dec.as_tuple()
-    if (
-        dec != 0
-        and isinstance(tup.exponent, int)
-        and len(tup.digits) + tup.exponent + scale > precision
-    ):
+    if dec == 0:
+        return Decimal((0, (0,), -scale))
+    if len(tup.digits) > precision:
         raise ValueError(
             f"Decimal value {dec!r} exceeds configured precision ({precision}, scale={scale})"
         )
@@ -354,7 +354,7 @@ def parse_iso_time(val: str, unit: TimeUnit = "us") -> time | int:
         total_us = (
             t.hour * 3_600 + t.minute * 60 + t.second
         ) * 1_000_000 + t.microsecond
-        return check_time_offset(total_us * 1_000 + sub_micro_nanos, "ns")
+        return total_us * 1_000 + sub_micro_nanos
     return t
 
 
@@ -363,7 +363,9 @@ def parse_iso_timestamp(
     unit: TimeUnit = "us",
     tz: str | None = None,
 ) -> datetime | int:
-    s = val.strip().replace("Z", "+00:00").replace("z", "+00:00")
+    s = val.strip()
+    if s.endswith(("Z", "z")):
+        s = s[:-1] + "+00:00"
     norm, sub_micro_nanos = _split_iso_fraction(s)
     try:
         dt = datetime.fromisoformat(norm)
@@ -381,7 +383,11 @@ def parse_iso_timestamp(
         ) * 1_000_000 + delta.microseconds
         return check_timestamp_epoch(epoch_us * 1_000 + sub_micro_nanos, "ns")
     if tz is not None:
-        return dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt
+        return (
+            dt.replace(tzinfo=timezone.utc)
+            if dt.tzinfo is None
+            else dt.astimezone(timezone.utc)
+        )
     if dt.tzinfo is not None:
         return dt.astimezone(timezone.utc).replace(tzinfo=None)
     return dt

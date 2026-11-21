@@ -23,12 +23,12 @@ Consumer-facing contracts (`EventConverter`, `ConnectEventConverter`, `JsonEvent
 
 | Module | Responsibility |
 | :--- | :--- |
-| `pydbzengine.schema.models` | Pure Arrow domain entities (`EventKind`, `TableSchema`, `SchemaDiff`, `ChangeRecord`, `TableBatch`, `ChangeBatch`) and Arrow PyCapsule interop (`__arrow_c_stream__`). |
+| `pydbzengine.schema.models` | Pure Arrow domain entities (`EventKind`, `TableSchema`, `SchemaDiff`, `ChangeRecord`, `TableBatch`, `ChangeBatch`), composable sub-batch slicing (`of_kind`, `group_by_kind`, `group_by_destination`, non-fragmenting `to_table_batches`), and Arrow PyCapsule interop (`__arrow_c_stream__`). |
 | `pydbzengine.schema.types` | Shared Arrow type mapping (`PRIMITIVE_ARROW_TYPES`, `TEMPORAL_LOGICAL_TYPES`, `Decimal`, `VariableScaleDecimal`) and pure-Python value normalizers (decimal quantization, ISO-8601 date/time/timestamp parsing, int/time bounds). Zero JSON, Base64, or JVM imports. |
 | `pydbzengine.schema.converter` | Abstract `EventConverter` base class owning one-pass schema compilation, per-destination caching, key compilation, tombstone resolution, and `ChangeBatch` construction. |
 | `pydbzengine.schema.connect` | `ConnectEventConverter` and Connect-only Java `SourceRecord`/`Schema`/`Struct`/`ByteBuffer`/`BigDecimal`/`java.util.Date` decoders. Zero JSON or Base64 imports. |
 | `pydbzengine.schema.json` | `JsonEventConverter` and JSON-only envelope parsing (`parse_float=Decimal`), Base64 decoding, numeric decimals, stringified map key coercion, and `[key, value]` map arrays. |
-| `pydbzengine.schema.consumer` | `SchemaAwareChangeHandler` subclassing `BasePythonChangeHandler` with causal lifecycle hooks (`on_table_created`, `on_schema_evolved`, `handle_table_batch`, `on_tombstone`, `on_schema_change`, `on_heartbeat`). |
+| `pydbzengine.schema.consumer` | `SchemaAwareChangeHandler` subclassing `BasePythonChangeHandler` with batch-first dispatch (`handle_change_batch`), atomic schema reconciliation (`reconcile_schema`), and table lifecycle hooks (`on_table_created`, `on_schema_evolved`, `handle_table_batch`). |
 
 ### Supported Data Types (`types.py`, `connect.py`, `json.py`)
 - **Primitives**: `boolean` $\rightarrow$ `pa.bool_()`, `int8`/`int16`/`int32`/`int64` $\rightarrow$ matching signed Arrow integer with bit-width bounds validation, `float`/`float32` $\rightarrow$ `pa.float32()`, `double`/`float64` $\rightarrow$ `pa.float64()`, `string` $\rightarrow$ `pa.string()`, `bytes` (and `io.debezium.data.Bits`) $\rightarrow$ `pa.binary()`.
@@ -55,5 +55,5 @@ Consumer-facing contracts (`EventConverter`, `ConnectEventConverter`, `JsonEvent
 | :--- | :--- | :--- |
 | **Missing Extra** | `ImportError` | Importing `pydbzengine.schema` when `pyarrow` is not installed (guides users to `pip install pydbzengine[arrow]`). |
 | **Unconfigured Handler** | `RuntimeError` | Calling `SchemaAwareChangeHandler.handle_batch` before providing a `converter`, `config`, or calling `configure(config)`. |
-| **Invalid Type / Wire Payload** | `TypeError` | Passing a non-mapping to `DebeziumConfig`, or a non-matching Python/Connect runtime type to a converter or `SchemaAwareChangeHandler`. |
+| **Invalid Type / Wire Payload** | `TypeError` | Passing a non-mapping to `DebeziumConfig`, a non-`EventKind` to `ChangeBatch.of_kind`, or a non-matching Python/Connect runtime type to a converter or `SchemaAwareChangeHandler`. |
 | **Malformed Schema, Config, or Value** | `ValueError` | Passing `schemas_enabled=False` to `EventConverter.from_config`, conflicting format/schema/heartbeat settings, empty destination, keyless tombstone, mismatched `ChangeRecord` `kind`/`value`, null value for non-nullable field or `target_schema` column, missing JSON `schema`/`payload` block, unsupported Connect or mismatched logical wire type, invalid ISO temporal string, out-of-bounds integer or time offset, invalid Base64 binary/decimal, invalid bool/int/float JSON map key, or Decimal precision/scale out of bounds. |

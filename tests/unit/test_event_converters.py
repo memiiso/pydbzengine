@@ -181,7 +181,7 @@ class TestEventConverters(unittest.TestCase):
         self.assertEqual(table_schema.key_schema.field("id").type, pa.int32())
         self.assertEqual(record.key, {"id": 1001})
 
-        pa_table = batch.table_batches()[0].to_arrow()
+        pa_table = batch.to_table_batches()[0].to_arrow()
         out_row = pa_table.to_pylist()[0]
         self.assertEqual(out_row["id"], 1001)
         self.assertEqual(out_row["name"], "Sally")
@@ -253,7 +253,7 @@ class TestEventConverters(unittest.TestCase):
                 ),
             ]
         )
-        env_tbl = env_batch.table_batches()[0].to_arrow()
+        env_tbl = env_batch.to_table_batches()[0].to_arrow()
         self.assertEqual(env_tbl.schema.names, ["before", "after", "op", "ts_ms"])
         self.assertEqual(env_tbl.num_rows, 2)
 
@@ -269,7 +269,7 @@ class TestEventConverters(unittest.TestCase):
                 ),
             ]
         )
-        b1, b2 = batch.table_batches()
+        b1, b2 = batch.to_table_batches()
         unified_schema = pa.unify_schemas(
             [b1.schema.arrow_schema, b2.schema.arrow_schema],
             promote_options="permissive",
@@ -379,7 +379,7 @@ class TestEventConverters(unittest.TestCase):
                 "f_vec": [1.0, 2.5],
             },
         )
-        tbl = self.converter.convert([rec]).table_batches()[0].to_arrow()
+        tbl = self.converter.convert([rec]).to_table_batches()[0].to_arrow()
         row = tbl.to_pylist()[0]
         self.assertEqual(row["f_isodate"], datetime.date(2024, 5, 5))
         self.assertEqual(row["f_isotime"], datetime.time(4, 5, 11))
@@ -445,7 +445,7 @@ class TestEventConverters(unittest.TestCase):
         batch = conv.convert(
             [MockChangeEvent(key=src_rec, value=src_rec, destination="connect.orders")]
         )
-        tb = batch.table_batches()[0]
+        tb = batch.to_table_batches()[0]
         self.assertEqual(tb.schema.key_fields, ("id",))
         self.assertEqual(batch.records[0].key, {"id": 7})
         self.assertEqual(tb.rows, [{"id": 7, "amount": Decimal("12.50"), "note": None}])

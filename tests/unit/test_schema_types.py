@@ -17,11 +17,13 @@ from pydbzengine.schema.types import (
     check_int_bounds,
     check_time_offset,
     check_timestamp_epoch,
+    int_bounds,
     parse_iso_date,
     parse_iso_time,
     parse_iso_timestamp,
     quantize_decimal,
     resolve_scalar_arrow_type,
+    scale_ms_to_unit,
     validate_decimal_bounds,
     validate_variable_scale,
 )
@@ -56,6 +58,14 @@ class TestSchemaTypesAndDecoders(unittest.TestCase):
             ),
             pa.decimal128(10, 6),
         )
+        with self.assertRaisesRegex(ValueError, "default_variable_scale"):
+            resolve_scalar_arrow_type(
+                "var_price",
+                "struct",
+                "io.debezium.data.VariableScaleDecimal",
+                {"precision": "10"},
+                default_variable_scale=99,
+            )
         with self.assertRaisesRegex(ValueError, "Missing required 'scale'"):
             resolve_scalar_arrow_type(
                 "price", "bytes", "org.apache.kafka.connect.data.Decimal", {}
@@ -65,20 +75,32 @@ class TestSchemaTypesAndDecoders(unittest.TestCase):
 
     def test_decimal_quantization_and_bounds(self) -> None:
         validate_decimal_bounds(10, 2)
-        for bad_p, bad_s in ((0, 0), (39, 2), (10, -1), (10, 11), (True, 0)):
+        for bad_p, bad_s in (
+            (0, 0),
+            (39, 2),
+            (10, -1),
+            (10, 11),
+            (True, 0),
+            (10.5, 2),
+            (10, 2.5),
+        ):
             with self.assertRaises(ValueError):
-                validate_decimal_bounds(bad_p, bad_s)
+                validate_decimal_bounds(bad_p, bad_s)  # type: ignore[arg-type]
         for bad_vs in (-1, 39, True):
             with self.assertRaises(ValueError):
                 validate_variable_scale(bad_vs)
 
         raw = (12345).to_bytes(4, byteorder="big", signed=True)
         self.assertEqual(bytes_to_decimal(raw, 2), Decimal("123.45"))
+        zero_dec = bytes_to_decimal(b"\x00", 2)
+        self.assertEqual(str(zero_dec), "0.00")
         with self.assertRaises(ValueError):
             bytes_to_decimal(b"", 2)
 
         self.assertEqual(quantize_decimal(Decimal("12.345"), 2, 10), Decimal("12.35"))
-        self.assertEqual(quantize_decimal(Decimal(0), 2, 10), Decimal("0.00"))
+        self.assertEqual(str(quantize_decimal(Decimal("12.3"), 2, 10)), "12.30")
+        self.assertEqual(str(quantize_decimal(Decimal("-0.001"), 2, 10)), "0.00")
+        self.assertEqual(str(quantize_decimal(Decimal(0), 2, 10)), "0.00")
         with self.assertRaises(ValueError):
             quantize_decimal(Decimal("NaN"), 2, 10)
         with self.assertRaises(ValueError):
@@ -109,7 +131,17 @@ class TestSchemaTypesAndDecoders(unittest.TestCase):
             parse_iso_timestamp("2024-01-01T12:00:00", "us", "UTC"),
             datetime.datetime(2024, 1, 1, 12, 0, 0, tzinfo=datetime.timezone.utc),
         )
+        utc_ts = parse_iso_timestamp("2024-01-01T12:00:00+02:00", "us", "UTC")
+        self.assertEqual(
+            utc_ts,
+            datetime.datetime(2024, 1, 1, 10, 0, 0, tzinfo=datetime.timezone.utc),
+        )
+        assert isinstance(utc_ts, datetime.datetime)
+        self.assertEqual(utc_ts.tzinfo, datetime.timezone.utc)
 
+        self.assertEqual(int_bounds(pa.int8()), (-128, 127))
+        with self.assertRaises(ValueError):
+            int_bounds(pa.float64())
         self.assertEqual(check_int_bounds(127, -128, 127, pa.int8()), 127)
         with self.assertRaises(ValueError):
             check_int_bounds(128, -128, 127, pa.int8())
@@ -119,6 +151,9 @@ class TestSchemaTypesAndDecoders(unittest.TestCase):
         self.assertEqual(check_time_offset(0, "ms"), 0)
         with self.assertRaises(ValueError):
             check_time_offset(86_400_000, "ms")
+        self.assertEqual(scale_ms_to_unit(5, "us"), 5_000)
+        with self.assertRaises(KeyError):
+            scale_ms_to_unit(5, "s")  # type: ignore[arg-type]
         self.assertEqual(check_timestamp_epoch(0, "us"), 0)
         with self.assertRaises(ValueError):
             check_timestamp_epoch(1 << 63, "us")

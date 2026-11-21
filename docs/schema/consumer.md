@@ -1,23 +1,21 @@
 # Schema-Aware Consumer & Examples
 
-`SchemaAwareChangeHandler` (`pydbzengine.schema.consumer`, re-exported from `pydbzengine.schema`) is the base class for schema-driven CDC consumers. It converts incoming `ChangeEvent` batches via `EventConverter`, tracks the active `TableSchema` per destination, and dispatches causally ordered lifecycle hooks.
+`SchemaAwareChangeHandler` (`pydbzengine.schema.consumer`, re-exported from `pydbzengine.schema`) is the base class for schema-driven CDC consumers. It converts incoming `ChangeEvent` batches via `EventConverter`, tracks the active `TableSchema` per destination, and dispatches homogeneous `TableBatch` runs while letting consumers split `ChangeBatch` by `EventKind` or destination in `handle_change_batch()`.
 
 ## Lifecycle Hooks & Dispatch Sequence
 
-When `DebeziumEngine` passes a batch of `ChangeEvent` records to `SchemaAwareChangeHandler.handle_batch()`, the handler converts the batch into a `ChangeBatch`, iterates `batch.destination_events()` in causal order, and invokes:
+When `DebeziumEngine` passes a batch of `ChangeEvent` records to `SchemaAwareChangeHandler.handle_batch()`, the handler converts the batch into a `ChangeBatch` and passes it to `handle_change_batch(batch)`. The default implementation iterates `batch.to_table_batches()` (grouping `EventKind.DATA` records per destination and splitting only when `TableSchema` changes—never fragmenting on tombstones) and invokes:
 
-1. **`on_table_created(self, schema: TableSchema) -> None`**
+1. **`reconcile_schema(self, schema: TableSchema) -> SchemaDiff | None`**
+   Atomically updates tracked schema state for `schema.destination`, calling `on_table_created` or `on_schema_evolved` before recording the new schema. Also available to custom `handle_change_batch()` overrides.
+2. **`on_table_created(self, schema: TableSchema) -> None`**
    Called the first time a `TableSchema` is observed for a destination.
-2. **`on_schema_evolved(self, new_schema: TableSchema, old_schema: TableSchema, diff: SchemaDiff) -> None`**
+3. **`on_schema_evolved(self, new_schema: TableSchema, old_schema: TableSchema, diff: SchemaDiff) -> None`**
    Called whenever a destination's `TableSchema` differs from its previously tracked version (`diff.has_changes`), passing the computed `SchemaDiff`.
-3. **`handle_table_batch(self, batch: TableBatch) -> None`**
+4. **`handle_table_batch(self, batch: TableBatch) -> None`**
    Called for each homogeneous `TableBatch` after `on_table_created` or `on_schema_evolved` has completed.
-4. **`on_tombstone(self, record: ChangeRecord) -> None`**
-   Called for each delete tombstone (`EventKind.TOMBSTONE`) at its causal position between `TableBatch` runs for that destination.
-5. **`on_schema_change(self, record: ChangeRecord) -> None`**
-   Called for each DDL schema-change event (`EventKind.SCHEMA_CHANGE`) after flushing all open destination runs.
-6. **`on_heartbeat(self, record: ChangeRecord) -> None`**
-   Called for each heartbeat event (`EventKind.HEARTBEAT`).
+
+To handle non-data event groups (`TOMBSTONE`, `SCHEMA_CHANGE`, `HEARTBEAT`) or custom cross-table / causal ordering, override `handle_change_batch(self, batch: ChangeBatch)` and slice `batch` with `batch.of_kind(...)`, `batch.group_by_kind()`, and `batch.group_by_destination()`.
 
 You can inspect currently tracked schemas at any time via `self.schemas` (returns a copy of `dict[str, TableSchema]`) or `self.get_schema(destination)`. Pass `default_variable_scale` to `super().__init__(default_variable_scale=...)` if you need a custom scale for `VariableScaleDecimal` fields (defaults to `10`).
 
@@ -32,7 +30,7 @@ sequenceDiagram
     Note over Engine,Sink: Batch 1: Initial Records (v1 Schema: id, amount)
     Engine->>Handler: handle_batch([event_1, event_2])
     Handler->>Conv: converter.convert(records)
-    Conv-->>Handler: ChangeBatch -> destination_events() = [TableBatch(dest="public.orders", schema=v1)]
+    Conv-->>Handler: ChangeBatch -> to_table_batches() = [TableBatch(dest="public.orders", schema=v1)]
     Handler->>Sink: on_table_created(schema=v1)
     Sink-->>Handler: CREATE TABLE orders (id INT, amount DECIMAL(10,2))
     Handler->>Sink: handle_table_batch(TableBatch[v1])
@@ -42,12 +40,12 @@ sequenceDiagram
     Engine->>Handler: handle_batch([event_3_v1, event_4_v2])
     Handler->>Conv: converter.convert(records)
     Note right of Conv: Intra-batch evolution sliced into 2 homogeneous TableBatches
-    Conv-->>Handler: ChangeBatch -> destination_events() = [TableBatch(v1), TableBatch(v2)]
+    Conv-->>Handler: ChangeBatch -> to_table_batches() = [TableBatch(v1), TableBatch(v2)]
 
     Handler->>Sink: handle_table_batch(TableBatch[v1])
     Sink-->>Handler: Load event_3 (v1 schema)
 
-    Handler->>Handler: diff = v2.diff(v1)
+    Handler->>Handler: diff = v2.diff_from(v1)
     Handler->>Sink: on_schema_evolved(new_schema=v2, old_schema=v1, diff=diff)
     Sink-->>Handler: ALTER TABLE orders ADD COLUMN status VARCHAR
     Handler->>Sink: handle_table_batch(TableBatch[v2])
@@ -356,31 +354,57 @@ if __name__ == "__main__":
 
 ## Lifecycle Events, Schema Alignment & Standalone Conversion
 
-### Handling Tombstones, DDL Events, and Heartbeats
-`SchemaAwareChangeHandler` exposes dedicated hooks for non-data lifecycle events, invoked in causal order alongside `handle_table_batch`:
+### Handling Tombstones, DDL Events, and Heartbeats in Batch
+Override `handle_change_batch(self, batch: ChangeBatch)` to split the batch via `batch.group_by_kind()`, `batch.of_kind(...)`, and `batch.group_by_destination()` and process each group in batch fashion (while reusing `super().handle_change_batch(batch)` or `self.reconcile_schema(...)` for schema tracking):
 
 ```python
 from pydbzengine.schema import (
-    ChangeRecord,
+    ChangeBatch,
+    EventKind,
     SchemaAwareChangeHandler,
     TableBatch,
 )
 
 
 class LifecycleAwareHandler(SchemaAwareChangeHandler):
+    def handle_change_batch(self, batch: ChangeBatch) -> None:
+        groups = batch.group_by_kind()
+
+        if ddls := groups.get(EventKind.SCHEMA_CHANGE):
+            self.logger.info("Received %d DDL event(s)", len(ddls))
+
+        if data := groups.get(EventKind.DATA):
+            for table_batch in data.to_table_batches():
+                self.reconcile_schema(table_batch.schema)
+                self.handle_table_batch(table_batch)
+
+        if tombstones := groups.get(EventKind.TOMBSTONE):
+            for dest, dest_ts in tombstones.group_by_destination().items():
+                keys = [r.key for r in dest_ts]
+                self.logger.info("Batch delete %d key(s) on %s", len(keys), dest)
+
+        if heartbeats := groups.get(EventKind.HEARTBEAT):
+            self.logger.debug("Latest heartbeat: %s", heartbeats.records[-1].value)
+
     def handle_table_batch(self, batch: TableBatch) -> None:
         table = batch.to_arrow()
         self.logger.info("Batch for %s: %d rows", batch.destination, table.num_rows)
+```
 
-    def on_tombstone(self, record: ChangeRecord) -> None:
-        self.logger.info("Tombstone on %s: key=%s", record.destination, record.key)
+For key-value sinks that require strict causal replay across interleaved `DATA` and `TOMBSTONE` events (for example, `ExtractNewRecordState` with `delete.tombstone.handling.mode=tombstone`), pass multiple kinds to `of_kind()` to preserve exact arrival order:
 
-    def on_schema_change(self, record: ChangeRecord) -> None:
-        ddl = record.value.get("ddl") if record.value is not None else None
-        self.logger.info("DDL event on %s: %s", record.destination, ddl)
-
-    def on_heartbeat(self, record: ChangeRecord) -> None:
-        self.logger.debug("Heartbeat on %s: %s", record.destination, record.value)
+```python
+class CausalKvHandler(SchemaAwareChangeHandler):
+    def handle_change_batch(self, batch: ChangeBatch) -> None:
+        mutations = batch.of_kind(EventKind.DATA, EventKind.TOMBSTONE)
+        for dest, dest_batch in mutations.group_by_destination().items():
+            for record in dest_batch:
+                if record.kind is EventKind.DATA:
+                    if record.schema is not None:
+                        self.reconcile_schema(record.schema)
+                    self.put(dest, record.key, record.value)
+                else:
+                    self.delete(dest, record.key)
 ```
 
 ### Aligning Batches to an Evolved `target_schema`
@@ -403,7 +427,7 @@ from pydbzengine.schema import EventConverter, JsonEventConverter
 converter = JsonEventConverter()
 change_batch = converter.convert(raw_events)
 
-for table_batch in change_batch.table_batches():
+for table_batch in change_batch.to_table_batches():
     arrow_table = table_batch.to_arrow()
 
 # Or resolve deterministically from DebeziumConfig (CONNECT or JSON with schemas_enabled=True)

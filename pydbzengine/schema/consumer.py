@@ -5,8 +5,6 @@ from pydbzengine.engine.config import DebeziumConfig
 from pydbzengine.schema.converter import EventConverter
 from pydbzengine.schema.models import (
     ChangeBatch,
-    ChangeRecord,
-    EventKind,
     SchemaDiff,
     TableBatch,
     TableSchema,
@@ -75,32 +73,37 @@ class SchemaAwareChangeHandler(BasePythonChangeHandler):
         self.handle_change_batch(self.converter.convert(records))
         return len(records)
 
+    def reconcile_schema(self, schema: TableSchema) -> SchemaDiff | None:
+        """
+        Reconciles tracked destination schema state atomically, invoking
+        `on_table_created` on first observation or `on_schema_evolved` when
+        structural changes occur. Returns the computed `SchemaDiff` if evolved.
+        """
+        destination = schema.destination
+        old_schema = self._schemas.get(destination)
+        if old_schema is None:
+            self.on_table_created(schema)
+            self._schemas[destination] = schema
+            return None
+        if schema != old_schema:
+            diff = schema.diff_from(old_schema)
+            if diff.has_changes:
+                self.on_schema_evolved(schema, old_schema, diff)
+            self._schemas[destination] = schema
+            return diff if diff.has_changes else None
+        return None
+
     def handle_change_batch(self, batch: ChangeBatch) -> None:
         """
-        Routes a converted ChangeBatch in causal order into lifecycle hooks
-        (`on_table_created`, `on_schema_evolved`, `on_tombstone`,
-        `on_schema_change`, `on_heartbeat`) and per-table `handle_table_batch`.
+        Dispatches homogeneous DATA TableBatches with automatic schema reconciliation.
+
+        Override this method to split `batch` via `batch.of_kind(...)`,
+        `batch.group_by_kind()`, or `batch.group_by_destination()` and process
+        non-data groups (TOMBSTONE, SCHEMA_CHANGE, HEARTBEAT) or custom ordering.
         """
-        for item in batch.destination_events():
-            if isinstance(item, TableBatch):
-                dest = item.destination
-                new_schema = item.schema
-                old_schema = self._schemas.get(dest)
-                if old_schema is None:
-                    self.on_table_created(new_schema)
-                    self._schemas[dest] = new_schema
-                elif new_schema != old_schema:
-                    diff = new_schema.diff(old_schema)
-                    if diff.has_changes:
-                        self.on_schema_evolved(new_schema, old_schema, diff)
-                    self._schemas[dest] = new_schema
-                self.handle_table_batch(item)
-            elif item.kind is EventKind.TOMBSTONE:
-                self.on_tombstone(item)
-            elif item.kind is EventKind.SCHEMA_CHANGE:
-                self.on_schema_change(item)
-            elif item.kind is EventKind.HEARTBEAT:
-                self.on_heartbeat(item)
+        for table_batch in batch.to_table_batches():
+            self.reconcile_schema(table_batch.schema)
+            self.handle_table_batch(table_batch)
 
     def on_table_created(self, schema: TableSchema) -> None:
         """Invoked the first time a data TableSchema is observed for a destination."""
@@ -115,12 +118,3 @@ class SchemaAwareChangeHandler(BasePythonChangeHandler):
 
     def handle_table_batch(self, batch: TableBatch) -> None:
         """Invoked for each homogeneous TableBatch of data records."""
-
-    def on_tombstone(self, record: ChangeRecord) -> None:
-        """Invoked for each delete tombstone ChangeRecord in the batch."""
-
-    def on_schema_change(self, record: ChangeRecord) -> None:
-        """Invoked for each DDL schema_change ChangeRecord in the batch."""
-
-    def on_heartbeat(self, record: ChangeRecord) -> None:
-        """Invoked for each heartbeat ChangeRecord in the batch."""

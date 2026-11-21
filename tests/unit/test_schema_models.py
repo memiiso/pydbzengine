@@ -94,7 +94,7 @@ class TestSchemaModels(unittest.TestCase):
             key_fields=("id",),
             key_schema=key_pa,
         )
-        diff_add: SchemaDiff = s3.diff(s1)
+        diff_add: SchemaDiff = s3.diff_from(s1)
         self.assertTrue(diff_add.has_changes)
         self.assertTrue(diff_add.is_additive)
         self.assertTrue(diff_add.is_compatible)
@@ -113,7 +113,7 @@ class TestSchemaModels(unittest.TestCase):
             key_fields=("id",),
             key_schema=key_pa,
         )
-        diff_break = s4.diff(s1)
+        diff_break = s4.diff_from(s1)
         self.assertTrue(diff_break.has_changes)
         self.assertFalse(diff_break.is_additive)
         self.assertFalse(diff_break.is_compatible)
@@ -389,7 +389,9 @@ class TestSchemaModels(unittest.TestCase):
             [{"xs": None, "m": None}, {"xs": [1, 2], "m": [("a", 10)]}],
         )
 
-    def test_change_batch_retains_arrival_order_and_filters_by_kind(self) -> None:
+    def test_change_batch_retains_arrival_order_and_slices_composable_sub_batches(
+        self,
+    ) -> None:
         s_data = TableSchema(
             destination="t1",
             arrow_schema=pa.schema([pa.field("id", pa.int32())]),
@@ -410,22 +412,71 @@ class TestSchemaModels(unittest.TestCase):
         r3 = ChangeRecord(
             destination="t1", schema=s_data, value={"id": 2}, key={"id": 2}
         )
-        ts = ChangeRecord(
+        ts1 = ChangeRecord(
             destination="t1",
             schema=None,
             value=None,
             key={"id": 99},
             kind=EventKind.TOMBSTONE,
         )
+        ts2 = ChangeRecord(
+            destination="t2",
+            schema=None,
+            value=None,
+            key={"id": 100},
+            kind=EventKind.TOMBSTONE,
+        )
 
-        batch = ChangeBatch(records=(r1, r2, r3, ts))
-        self.assertEqual(len(batch), 4)
-        self.assertEqual(list(batch), [r1, r2, r3, ts])
-        self.assertEqual(batch.data_records, (r1, r3))
-        self.assertEqual(batch.of_kind(EventKind.HEARTBEAT), (r2,))
-        self.assertEqual(batch.of_kind(EventKind.TOMBSTONE), (ts,))
+        batch = ChangeBatch(records=(r1, r2, r3, ts1, ts2))
+        self.assertEqual(len(batch), 5)
+        self.assertEqual(list(batch), [r1, r2, r3, ts1, ts2])
 
-        table_batches = batch.table_batches()
+        # of_kind returns composable ChangeBatch instances
+        data_sub = batch.of_kind(EventKind.DATA)
+        hb_sub = batch.of_kind(EventKind.HEARTBEAT)
+        ts_sub = batch.of_kind(EventKind.TOMBSTONE)
+        ddl_sub = batch.of_kind(EventKind.SCHEMA_CHANGE)
+        self.assertIsInstance(data_sub, ChangeBatch)
+        self.assertEqual(data_sub.records, (r1, r3))
+        self.assertEqual(hb_sub.records, (r2,))
+        self.assertEqual(ts_sub.records, (ts1, ts2))
+        self.assertEqual(len(ddl_sub), 0)
+        self.assertFalse(bool(ddl_sub))
+
+        # Multi-kind of_kind preserves exact arrival order across selected kinds
+        mutations = batch.of_kind(EventKind.DATA, EventKind.TOMBSTONE)
+        self.assertEqual(mutations.records, (r1, r3, ts1, ts2))
+
+        # Non-EventKind arguments fail fast (even valid string values)
+        with self.assertRaises(TypeError):
+            batch.of_kind("tombstone")  # type: ignore[arg-type]
+        with self.assertRaises(TypeError):
+            batch.of_kind(EventKind.DATA, "heartbeat")  # type: ignore[arg-type]
+
+        # group_by_kind partitions in a single pass with non-empty sub-batches only
+        by_kind = batch.group_by_kind()
+        self.assertEqual(
+            list(by_kind.keys()),
+            [EventKind.DATA, EventKind.HEARTBEAT, EventKind.TOMBSTONE],
+        )
+        self.assertEqual(by_kind[EventKind.DATA], data_sub)
+        self.assertEqual(by_kind[EventKind.HEARTBEAT], hb_sub)
+        self.assertEqual(by_kind[EventKind.TOMBSTONE], ts_sub)
+        self.assertNotIn(EventKind.SCHEMA_CHANGE, by_kind)
+
+        # Chaining of_kind -> group_by_destination
+        ts_by_dest = ts_sub.group_by_destination()
+        self.assertEqual(
+            ts_by_dest,
+            {
+                "t1": ChangeBatch(records=(ts1,)),
+                "t2": ChangeBatch(records=(ts2,)),
+            },
+        )
+
+        # to_table_batches() on full batch matches data sub-batch
+        table_batches = batch.to_table_batches()
+        self.assertEqual(table_batches, data_sub.to_table_batches())
         self.assertEqual(len(table_batches), 1)
         self.assertEqual(table_batches[0].destination, "t1")
         self.assertEqual(len(table_batches[0].rows), 2)
@@ -476,7 +527,7 @@ class TestSchemaModels(unittest.TestCase):
             )
 
         env_v1 = make_env(v1_fields)
-        diff_add = make_env(v2_nullable_add).diff(env_v1)
+        diff_add = make_env(v2_nullable_add).diff_from(env_v1)
         self.assertTrue(diff_add.has_changes)
         self.assertTrue(diff_add.is_additive)
         self.assertTrue(diff_add.is_compatible)
@@ -485,18 +536,18 @@ class TestSchemaModels(unittest.TestCase):
         )
 
         # Adding nullable=False subfield inside before/after is neither additive nor compatible
-        diff_non_null = make_env(v2_non_null_add).diff(env_v1)
+        diff_non_null = make_env(v2_non_null_add).diff_from(env_v1)
         self.assertTrue(diff_non_null.has_changes)
         self.assertFalse(diff_non_null.is_additive)
         self.assertFalse(diff_non_null.is_compatible)
 
         # Widening + adding subfield is compatible, not purely additive
-        diff_widen = make_env(v2_widened).diff(env_v1)
+        diff_widen = make_env(v2_widened).diff_from(env_v1)
         self.assertFalse(diff_widen.is_additive)
         self.assertTrue(diff_widen.is_compatible)
 
         # Reordering subfields inside struct is not additive
-        diff_reorder = make_env(v2_reordered).diff(env_v1)
+        diff_reorder = make_env(v2_reordered).diff_from(env_v1)
         self.assertFalse(diff_reorder.is_additive)
 
     def test_schema_diff_rejects_non_nullable_additions_and_tracks_key_schema(
@@ -520,7 +571,7 @@ class TestSchemaModels(unittest.TestCase):
             key_fields=("id",),
             key_schema=s1.key_schema,
         )
-        diff_top_req = s_top_req.diff(s1)
+        diff_top_req = s_top_req.diff_from(s1)
         self.assertTrue(diff_top_req.has_changes)
         self.assertFalse(diff_top_req.is_additive)
         self.assertFalse(diff_top_req.is_compatible)
@@ -532,7 +583,7 @@ class TestSchemaModels(unittest.TestCase):
             key_fields=("id",),
             key_schema=pa.schema([pa.field("id", pa.int64(), nullable=False)]),
         )
-        diff_key_schema = s_key_widened.diff(s1)
+        diff_key_schema = s_key_widened.diff_from(s1)
         self.assertFalse(diff_key_schema.key_fields_changed)
         self.assertTrue(diff_key_schema.key_schema_changed)
         self.assertTrue(diff_key_schema.has_changes)
@@ -564,7 +615,7 @@ class TestSchemaModels(unittest.TestCase):
                 ]
             ),
         )
-        self.assertFalse(s_list_new_req.diff(s_list_old).is_compatible)
+        self.assertFalse(s_list_new_req.diff_from(s_list_old).is_compatible)
 
     def test_strict_model_validation_raises(self) -> None:
         with self.assertRaises(ValueError):
@@ -607,7 +658,7 @@ class TestSchemaModels(unittest.TestCase):
                 ]
             ),
         )
-        self.assertTrue(s_compat.diff(s_old).is_compatible)
+        self.assertTrue(s_compat.diff_from(s_old).is_compatible)
 
         # Incompatible nested sibling type change (int32 -> string) is rejected
         s_bad_type = TableSchema(
@@ -626,7 +677,7 @@ class TestSchemaModels(unittest.TestCase):
                 ]
             ),
         )
-        self.assertFalse(s_bad_type.diff(s_old).is_compatible)
+        self.assertFalse(s_bad_type.diff_from(s_old).is_compatible)
 
         # Dropped nested struct field ("b" removed) is rejected
         s_dropped_nested = TableSchema(
@@ -635,7 +686,7 @@ class TestSchemaModels(unittest.TestCase):
                 [pa.field("meta", pa.struct([pa.field("a", pa.string())]))]
             ),
         )
-        self.assertFalse(s_dropped_nested.diff(s_old).is_compatible)
+        self.assertFalse(s_dropped_nested.diff_from(s_old).is_compatible)
 
         # Top-level nullability widening (False -> True) is detected and compatible;
         # tightening (True -> False) is detected and incompatible.
@@ -647,13 +698,13 @@ class TestSchemaModels(unittest.TestCase):
             destination="t1",
             arrow_schema=pa.schema([pa.field("id", pa.int32(), nullable=True)]),
         )
-        diff_widen = s_nullable.diff(s_non_null)
+        diff_widen = s_nullable.diff_from(s_non_null)
         self.assertTrue(diff_widen.has_changes)
         self.assertFalse(diff_widen.is_additive)
         self.assertTrue(diff_widen.is_compatible)
         self.assertEqual(len(diff_widen.changed_fields), 1)
 
-        diff_tighten = s_non_null.diff(s_nullable)
+        diff_tighten = s_non_null.diff_from(s_nullable)
         self.assertTrue(diff_tighten.has_changes)
         self.assertFalse(diff_tighten.is_compatible)
         self.assertEqual(len(diff_tighten.changed_fields), 1)
@@ -720,7 +771,7 @@ class TestSchemaModels(unittest.TestCase):
             arrow_schema=pa.schema([("b", pa.string()), ("a", pa.int32())]),
             key_fields=("a",),
         )
-        diff_reorder = s_ba.diff(s_ab)
+        diff_reorder = s_ba.diff_from(s_ab)
         self.assertTrue(diff_reorder.reordered)
         self.assertTrue(diff_reorder.has_changes)
         self.assertFalse(diff_reorder.is_additive)
@@ -731,23 +782,36 @@ class TestSchemaModels(unittest.TestCase):
             arrow_schema=pa.schema([("a", pa.int32()), ("b", pa.string())]),
             key_fields=("a", "b"),
         )
-        diff_pk = s_pk_changed.diff(s_ab)
+        diff_pk = s_pk_changed.diff_from(s_ab)
         self.assertTrue(diff_pk.key_fields_changed)
         self.assertTrue(diff_pk.has_changes)
         self.assertFalse(diff_pk.is_additive)
         self.assertFalse(diff_pk.is_compatible)
 
-    def test_change_batch_splits_runs_on_tombstone_and_schema_change_barriers(
+    def test_change_batch_table_batches_does_not_fragment_on_tombstones_and_splits_on_schema_evolution(
         self,
     ) -> None:
-        s = TableSchema(
+        s_orders_v1 = TableSchema(
             destination="orders",
             arrow_schema=pa.schema([("id", pa.int32()), ("name", pa.string())]),
             key_fields=("id",),
         )
-        r_alice = ChangeRecord(
+        s_orders_v2 = TableSchema(
             destination="orders",
-            schema=s,
+            arrow_schema=pa.schema(
+                [("id", pa.int32()), ("name", pa.string()), ("status", pa.string())]
+            ),
+            key_fields=("id",),
+        )
+        s_customers = TableSchema(
+            destination="customers",
+            arrow_schema=pa.schema([("id", pa.int32())]),
+            key_fields=("id",),
+        )
+
+        r_o1 = ChangeRecord(
+            destination="orders",
+            schema=s_orders_v1,
             value={"id": 1, "name": "Alice"},
             key={"id": 1},
         )
@@ -757,22 +821,40 @@ class TestSchemaModels(unittest.TestCase):
             key={"id": 1},
             kind=EventKind.TOMBSTONE,
         )
-        r_bob = ChangeRecord(
+        r_c1 = ChangeRecord(
+            destination="customers",
+            schema=s_customers,
+            value={"id": 10},
+            key={"id": 10},
+        )
+        r_o2 = ChangeRecord(
             destination="orders",
-            schema=s,
-            value={"id": 1, "name": "Bob"},
-            key={"id": 1},
+            schema=s_orders_v1,
+            value={"id": 2, "name": "Bob"},
+            key={"id": 2},
+        )
+        ts_2 = ChangeRecord(
+            destination="orders",
+            value=None,
+            key={"id": 2},
+            kind=EventKind.TOMBSTONE,
         )
         ddl = ChangeRecord(
             destination="inventory",
-            value={"ddl": "ALTER TABLE orders ADD COLUMN c INT"},
+            value={"ddl": "ALTER TABLE orders ADD COLUMN status VARCHAR"},
             kind=EventKind.SCHEMA_CHANGE,
         )
-        r_carol = ChangeRecord(
+        r_o3 = ChangeRecord(
             destination="orders",
-            schema=s,
-            value={"id": 2, "name": "Carol"},
-            key={"id": 2},
+            schema=s_orders_v2,
+            value={"id": 3, "name": "Carol", "status": "open"},
+            key={"id": 3},
+        )
+        r_c2 = ChangeRecord(
+            destination="customers",
+            schema=s_customers,
+            value={"id": 20},
+            key={"id": 20},
         )
         hb = ChangeRecord(
             destination="__debezium-heartbeat.srv",
@@ -780,32 +862,30 @@ class TestSchemaModels(unittest.TestCase):
             kind=EventKind.HEARTBEAT,
         )
 
-        batch = ChangeBatch(records=(r_alice, ts_1, r_bob, ddl, r_carol, hb))
-        events = batch.destination_events()
-        self.assertEqual(len(events), 6)
-        self.assertIsInstance(events[0], TableBatch)
-        assert isinstance(events[0], TableBatch)
-        self.assertEqual(events[0].rows, [{"id": 1, "name": "Alice"}])
-        self.assertEqual(events[1], ts_1)
-        self.assertIsInstance(events[2], TableBatch)
-        assert isinstance(events[2], TableBatch)
-        self.assertEqual(events[2].rows, [{"id": 1, "name": "Bob"}])
-        self.assertEqual(events[3], ddl)
-        self.assertIsInstance(events[4], TableBatch)
-        assert isinstance(events[4], TableBatch)
-        self.assertEqual(events[4].rows, [{"id": 2, "name": "Carol"}])
-        self.assertEqual(events[5], hb)
-
-        t_batches = batch.table_batches()
+        batch = ChangeBatch(records=(r_o1, ts_1, r_c1, r_o2, ts_2, ddl, r_o3, r_c2, hb))
+        t_batches = batch.to_table_batches()
         self.assertEqual(len(t_batches), 3)
+        self.assertEqual(t_batches[0].schema, s_orders_v1)
         self.assertEqual(
-            [tb.rows for tb in t_batches],
-            [
-                [{"id": 1, "name": "Alice"}],
-                [{"id": 1, "name": "Bob"}],
-                [{"id": 2, "name": "Carol"}],
-            ],
+            t_batches[0].rows,
+            [{"id": 1, "name": "Alice"}, {"id": 2, "name": "Bob"}],
         )
+        self.assertEqual(t_batches[1].schema, s_orders_v2)
+        self.assertEqual(
+            t_batches[1].rows, [{"id": 3, "name": "Carol", "status": "open"}]
+        )
+        self.assertEqual(t_batches[2].schema, s_customers)
+        self.assertEqual(t_batches[2].rows, [{"id": 10}, {"id": 20}])
+
+        # Non-DATA-only batch yields empty tuple
+        self.assertEqual(ChangeBatch(records=(ts_1, ddl, hb)).to_table_batches(), ())
+
+        # DATA record without TableSchema fails fast
+        missing_schema = ChangeRecord(
+            destination="orders", schema=None, value={"id": 1}
+        )
+        with self.assertRaisesRegex(ValueError, "missing a TableSchema"):
+            ChangeBatch(records=(missing_schema,)).to_table_batches()
 
     def test_table_schema_namespace_and_destination_validation(self) -> None:
         pa_s = pa.schema([("id", pa.int32())])
@@ -863,7 +943,7 @@ class TestSchemaModels(unittest.TestCase):
         def is_compat(old_t: pa.DataType, new_t: pa.DataType) -> bool:
             s_old = TableSchema("t", pa.schema([("col", old_t)]))
             s_new = TableSchema("t", pa.schema([("col", new_t)]))
-            diff = s_new.diff(s_old)
+            diff = s_new.diff_from(s_old)
             self.assertTrue(diff.has_changes)
             return diff.is_compatible
 

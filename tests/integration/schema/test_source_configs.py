@@ -144,5 +144,5 @@ class TestSourceConfigs(BaseSchemaIntegrationTest):
         self.assertEqual(row.get("__op"), "r")
         self.assertEqual(row.get("__table"), self.TABLE_NAME)
 
-        tbl = batch.table_batches()[0].to_arrow()
+        tbl = batch.to_table_batches()[0].to_arrow()
         self.assertEqual(tbl.num_rows, 1)

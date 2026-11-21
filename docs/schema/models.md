@@ -8,10 +8,10 @@ This page documents the public domain entities in `pydbzengine.schema.models` (r
 classDiagram
     class ChangeBatch {
         +tuple~ChangeRecord~ records
-        +tuple~ChangeRecord~ data_records
-        +of_kind(kind: EventKind) tuple~ChangeRecord~
-        +destination_events() tuple~TableBatch | ChangeRecord~
-        +table_batches() tuple~TableBatch~
+        +of_kind(kind: EventKind, *more: EventKind) ChangeBatch
+        +group_by_kind() dict~EventKind, ChangeBatch~
+        +group_by_destination() dict~str, ChangeBatch~
+        +to_table_batches() tuple~TableBatch~
     }
 
     class TableBatch {
@@ -38,7 +38,7 @@ classDiagram
         +pa.Schema | None key_schema
         +tuple~str~ namespace
         +str table_name
-        +diff(previous: TableSchema | pa.Schema) SchemaDiff
+        +diff_from(previous: TableSchema | pa.Schema) SchemaDiff
     }
 
     class SchemaDiff {
@@ -58,7 +58,7 @@ classDiagram
     TableBatch *-- ChangeRecord : groups
     TableBatch --> TableSchema : bound to
     ChangeRecord --> TableSchema : references
-    TableSchema ..> SchemaDiff : computes via diff()
+    TableSchema ..> SchemaDiff : computes via diff_from()
 ```
 
 ---
@@ -76,7 +76,7 @@ Immutable compiled schema descriptor for a CDC destination:
 | `key_schema` | `pa.Schema \| None` | Compiled PyArrow schema of the event key, if present (non-map keys). |
 | `namespace` | `tuple[str, ...]` | Dot-split destination prefix excluding `table_name` (e.g., `("cdc_prod", "inventory")`). |
 | `table_name` | `str` | Table name extracted from the final dot-separated segment of `destination` (e.g., `"orders"`). |
-| `diff(previous)` | `SchemaDiff` | Computes the structural difference from `previous` (`TableSchema` or `pa.Schema`) to `self`. |
+| `diff_from(previous)` | `SchemaDiff` | Computes the structural difference from `previous` (`TableSchema` or `pa.Schema`) to `self`. |
 
 ### `SchemaDiff`
 Structural comparison result between a previous and new `TableSchema` (or `pa.Schema`):
@@ -115,11 +115,11 @@ Structural comparison result between a previous and new `TableSchema` (or `pa.Sc
 In default Debezium envelope mode, access fields directly on `record.value` (for example, `record.value["op"]`, `record.value["before"]`, `record.value["after"]`, `record.value["source"]`). When `ExtractNewRecordState` is configured, `record.value` contains the unwrapped table columns (plus any configured metadata fields like `record.value["__op"]`) directly at the top level.
 
 ### `TableBatch` & `ChangeBatch`
-- **`ChangeBatch`**: Holds `records: tuple[ChangeRecord, ...]` in arrival order (supports `len()` and iteration).
-  - `batch.of_kind(kind: EventKind) -> tuple[ChangeRecord, ...]`: Filters records by `EventKind` in arrival order.
-  - `batch.data_records -> tuple[ChangeRecord, ...]`: Shorthand for `batch.of_kind(EventKind.DATA)`.
-  - `batch.destination_events() -> tuple[TableBatch | ChangeRecord, ...]`: Segments records into causally ordered per-destination `TableBatch` runs and lifecycle `ChangeRecord` items (`TOMBSTONE`, `SCHEMA_CHANGE`, `HEARTBEAT`). Flushes a destination's open run on `TableSchema` change or tombstone, flushes all open destinations on `SCHEMA_CHANGE` barriers, and emits heartbeats after data/DDL events.
-  - `batch.table_batches() -> tuple[TableBatch, ...]`: Returns only the homogeneous `TableBatch` runs from `destination_events()`.
+- **`ChangeBatch`**: Holds `records: tuple[ChangeRecord, ...]` in arrival order (supports `len()`, `bool()`, and iteration).
+  - `batch.of_kind(kind: EventKind, *more: EventKind) -> ChangeBatch`: Returns a composable sub-`ChangeBatch` containing only records matching the given `EventKind`(s) in arrival order. Fails fast with `TypeError` on non-`EventKind` arguments.
+  - `batch.group_by_kind() -> dict[EventKind, ChangeBatch]`: Partitions records in a single pass into non-empty sub-batches keyed by `EventKind`.
+  - `batch.group_by_destination() -> dict[str, ChangeBatch]`: Groups records in a single pass into sub-batches keyed by `destination`, preserving arrival order (chains naturally with `of_kind()`, e.g., `batch.of_kind(EventKind.TOMBSTONE).group_by_destination()`).
+  - `batch.to_table_batches() -> tuple[TableBatch, ...]`: Groups `EventKind.DATA` records per destination into homogeneous `TableBatch` runs, splitting a destination's batch only when its `TableSchema` changes within the batch (non-data records such as tombstones, DDLs, and heartbeats are ignored and do not fragment `DATA` runs).
 - **`TableBatch`**: Groups consecutive `EventKind.DATA` records for one destination sharing a single `TableSchema` (supports `len()` and iteration).
   - `batch.destination -> str`: Shortcut for `batch.schema.destination`.
   - `batch.rows -> list[dict[str, Any]]`: Converted `record.value` dictionaries matching `schema.arrow_schema`.

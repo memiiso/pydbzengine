@@ -149,7 +149,7 @@ class TestJsonSchemaEnabled(BaseSchemaIntegrationTest):
         self.assertIn('"k1":"v1"', str(row["col_hstore"]))
 
         # 4. End-to-End Arrow Table Construction & Materialized Temporal Types
-        arrow_table = batch.table_batches()[0].to_arrow()
+        arrow_table = batch.to_table_batches()[0].to_arrow()
         self.assertEqual(arrow_table.num_rows, 1)
         self.assertEqual(arrow_table.num_columns, len(envelope_schema))
         arrow_row = arrow_table.to_pylist()[0]["after"]
@@ -180,7 +180,7 @@ class TestJsonSchemaEnabled(BaseSchemaIntegrationTest):
         converter = JsonEventConverter()
         batch = converter.convert(records)
         self.assertEqual(len(batch.records), 2)
-        table_batches = batch.table_batches()
+        table_batches = batch.to_table_batches()
         self.assertEqual(len(table_batches), 1)
         tb = table_batches[0]
         self.assertIsNotNone(tb.schema)
@@ -224,4 +224,4 @@ class TestJsonSchemaEnabled(BaseSchemaIntegrationTest):
         self.assertIsNone(rec.key)
         self.assertEqual(rec.value["after"]["label"], "no_pk_json")
         self.assertEqual(rec.value["after"]["score"], 99)
-        self.assertEqual(batch.table_batches()[0].to_arrow().num_rows, 1)
+        self.assertEqual(batch.to_table_batches()[0].to_arrow().num_rows, 1)

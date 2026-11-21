@@ -52,7 +52,7 @@ class TestDecimalModes(BaseSchemaIntegrationTest):
         self.assertEqual(row["col_numeric_fixed"], Decimal("12345678.1234"))
         self.assertEqual(row["col_numeric_var"], Decimal("999999.99999"))
 
-        tbl = batch.table_batches()[0].to_arrow()
+        tbl = batch.to_table_batches()[0].to_arrow()
         self.assertEqual(tbl.num_rows, 1)
         self.assertEqual(
             tbl.to_pylist()[0]["after"]["col_numeric_fixed"], Decimal("12345678.1234")
@@ -114,7 +114,7 @@ class TestDecimalModes(BaseSchemaIntegrationTest):
         self.assertEqual(rec.value["after"]["amount_neg"], exact_neg)
         self.assertEqual(rec.value["after"]["amount_var"], exact_var)
 
-        tbl = batch.table_batches()[0].to_arrow()
+        tbl = batch.to_table_batches()[0].to_arrow()
         arrow_after = tbl.to_pylist()[0]["after"]
         self.assertEqual(arrow_after["amount_pos"], exact_pos)
         self.assertEqual(arrow_after["amount_neg"], exact_neg)
@@ -147,7 +147,7 @@ class TestDecimalModes(BaseSchemaIntegrationTest):
         self.assertIsInstance(row["col_numeric_fixed"], float)
         self.assertAlmostEqual(row["col_numeric_fixed"], 12345678.1234, places=2)
 
-        tbl = batch.table_batches()[0].to_arrow()
+        tbl = batch.to_table_batches()[0].to_arrow()
         self.assertEqual(tbl.num_rows, 1)
 
     def test_decimal_mode_string(self) -> None:
@@ -177,5 +177,5 @@ class TestDecimalModes(BaseSchemaIntegrationTest):
         self.assertIsInstance(row["col_numeric_fixed"], str)
         self.assertEqual(row["col_numeric_fixed"], "12345678.1234")
 
-        tbl = batch.table_batches()[0].to_arrow()
+        tbl = batch.to_table_batches()[0].to_arrow()
         self.assertEqual(tbl.num_rows, 1)

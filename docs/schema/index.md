@@ -17,7 +17,7 @@ Downstream consumers that extend `SchemaAwareChangeHandler` receive compiled `Ta
 | **Type Conversion** | Raw JSON primitives, Base64 strings, or Java objects | Single-pass conversion to Python types and `pyarrow.DataType` |
 | **Tabular Output** | Manual dictionary construction | Direct `batch.to_arrow(target_schema=...)` (`pyarrow.Table`) |
 | **Schema Tracking** | Manual tracking per destination | Automatic `on_table_created` and `on_schema_evolved` hooks with `SchemaDiff` |
-| **Intra-Batch DDL & Lifecycle** | Mixed schema versions and event kinds in one list | Causally ordered `TableBatch` runs plus `on_tombstone`, `on_schema_change`, and `on_heartbeat` hooks |
+| **Intra-Batch DDL & Lifecycle** | Mixed schema versions and event kinds in one list | Homogeneous `TableBatch` runs plus composable `of_kind()`, `group_by_kind()`, and `group_by_destination()` sub-batches |
 
 ---
 
@@ -60,15 +60,15 @@ flowchart TD
 
     CEC & JEC -->|"Single-Pass Conversion\n+ Cached TableSchema"| CB["ChangeBatch\n(tuple[ChangeRecord, ...])"]
 
-    subgraph Dispatch["Causal Segmentation & Schema Tracking"]
-        CB -->|"batch.destination_events()"| EVENTS["Causal Stream:\nTableBatch Runs + Lifecycle Records"]
-        EVENTS -->|"TableBatch"| CHECK{"Tracked Schema\nfor Destination?"}
+    subgraph Dispatch["Batch Sub-Grouping & Schema Tracking"]
+        CB -->|"batch.to_table_batches()"| TB["Homogeneous TableBatch Runs\n(per destination & schema)"]
+        TB -->|"reconcile_schema()"| CHECK{"Tracked Schema\nfor Destination?"}
         CHECK -->|"First Time Seen"| OTC["on_table_created(new_schema)"]
         CHECK -->|"new_schema != old_schema"| OSE["on_schema_evolved(new_schema, old_schema, diff)"]
         CHECK -->|"Unchanged"| HTB["handle_table_batch(table_batch)"]
         OTC --> HTB
         OSE --> HTB
-        EVENTS -->|"TOMBSTONE / SCHEMA_CHANGE / HEARTBEAT"| LIFE["on_tombstone() / on_schema_change()\non_heartbeat()"]
+        CB -.->|"Optional in handle_change_batch():\nof_kind() / group_by_kind()"| LIFE["Custom Batch Handling\n(TOMBSTONE / SCHEMA_CHANGE / HEARTBEAT)"]
     end
 
     HTB --> SINK[("Target Sink\n(Snowflake, Iceberg, Parquet, DuckDB)")]

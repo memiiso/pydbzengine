@@ -54,7 +54,7 @@ class TestTemporalModes(BaseSchemaIntegrationTest):
             after_struct.field("col_timestamp_millis").type, pa.timestamp("ms")
         )
 
-        tbl = batch.table_batches()[0].to_arrow()
+        tbl = batch.to_table_batches()[0].to_arrow()
         self.assertEqual(tbl.num_rows, 1)
         arrow_row = tbl.to_pylist()[0]["after"]
         self.assertEqual(arrow_row["col_date"], datetime.date(2024, 3, 15))
@@ -98,7 +98,7 @@ class TestTemporalModes(BaseSchemaIntegrationTest):
             after_struct.field("col_timestamp_millis").type, pa.timestamp("ms")
         )
 
-        tbl = batch.table_batches()[0].to_arrow()
+        tbl = batch.to_table_batches()[0].to_arrow()
         self.assertEqual(tbl.num_rows, 1)
         arrow_row = tbl.to_pylist()[0]["after"]
         self.assertEqual(arrow_row["col_date"], datetime.date(2024, 3, 15))
@@ -130,7 +130,7 @@ class TestTemporalModes(BaseSchemaIntegrationTest):
         self.assertEqual(after_struct.field("col_time_micros").type, pa.time64("us"))
         self.assertEqual(after_struct.field("col_time_millis").type, pa.time64("us"))
 
-        tbl = batch.table_batches()[0].to_arrow()
+        tbl = batch.to_table_batches()[0].to_arrow()
         self.assertEqual(tbl.num_rows, 1)
         arrow_row = tbl.to_pylist()[0]["after"]
         self.assertEqual(arrow_row["col_time_micros"], datetime.time(14, 30, 0, 123456))

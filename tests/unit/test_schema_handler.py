@@ -13,6 +13,7 @@ import pyarrow.parquet as pq
 
 from pydbzengine import DebeziumConfig
 from pydbzengine.schema import (
+    ChangeBatch,
     ChangeRecord,
     EventKind,
     JsonEventConverter,
@@ -56,6 +57,11 @@ class TestSchemaAwareChangeHandler(unittest.TestCase):
                     promote_options="permissive",
                 )
 
+            def handle_change_batch(self, batch: ChangeBatch) -> None:
+                super().handle_change_batch(batch)
+                if tombstones := batch.of_kind(EventKind.TOMBSTONE):
+                    self.tombstones.extend(tombstones)
+
             def handle_table_batch(self, batch: TableBatch) -> None:
                 dest = batch.destination
                 aligned = batch.to_arrow(target_schema=self.target_schemas[dest])
@@ -65,9 +71,6 @@ class TestSchemaAwareChangeHandler(unittest.TestCase):
                 )
                 pq.write_table(aligned, out_file)
                 self.written_files.append(out_file)
-
-            def on_tombstone(self, record: ChangeRecord) -> None:
-                self.tombstones.append(record)
 
         with tempfile.TemporaryDirectory() as tmpdir:
             handler = LakehouseParquetHandler(Path(tmpdir))
@@ -196,7 +199,9 @@ class TestSchemaAwareChangeHandler(unittest.TestCase):
         self.assertTrue(evolutions[0].key_schema_changed)
         self.assertFalse(evolutions[0].key_fields_changed)
 
-    def test_causal_tombstone_and_lifecycle_hook_ordering(self) -> None:
+    def test_custom_handle_change_batch_supports_causal_kv_replay_and_kind_groups(
+        self,
+    ) -> None:
         class StatefulOrderHandler(SchemaAwareChangeHandler):
             def __init__(self) -> None:
                 super().__init__()
@@ -206,21 +211,24 @@ class TestSchemaAwareChangeHandler(unittest.TestCase):
             def on_table_created(self, schema: TableSchema) -> None:
                 self.events_log.append(f"created:{schema.destination}")
 
-            def handle_table_batch(self, batch: TableBatch) -> None:
-                self.events_log.append(f"batch:{len(batch)}")
-                for row in batch.rows:
-                    self.kv_state[row["id"]] = row["name"]
+            def handle_change_batch(self, batch: ChangeBatch) -> None:
+                mutations = batch.of_kind(EventKind.DATA, EventKind.TOMBSTONE)
+                for record in mutations:
+                    if record.kind is EventKind.DATA:
+                        assert record.schema is not None
+                        assert record.value is not None
+                        self.reconcile_schema(record.schema)
+                        self.events_log.append(f"data:{record.value['name']}")
+                        self.kv_state[record.value["id"]] = record.value["name"]
+                    else:
+                        assert record.key is not None
+                        self.events_log.append(f"tombstone:{record.key['id']}")
+                        self.kv_state.pop(record.key["id"], None)
 
-            def on_tombstone(self, record: ChangeRecord) -> None:
-                assert record.key is not None
-                self.events_log.append(f"tombstone:{record.key['id']}")
-                self.kv_state.pop(record.key["id"], None)
-
-            def on_schema_change(self, record: ChangeRecord) -> None:
-                self.events_log.append("ddl")
-
-            def on_heartbeat(self, record: ChangeRecord) -> None:
-                self.events_log.append("heartbeat")
+                if ddls := batch.of_kind(EventKind.SCHEMA_CHANGE):
+                    self.events_log.append(f"ddls:{len(ddls)}")
+                if heartbeats := batch.of_kind(EventKind.HEARTBEAT):
+                    self.events_log.append(f"heartbeats:{len(heartbeats)}")
 
         handler = StatefulOrderHandler()
         handler.configure(DebeziumConfig({}))
@@ -280,13 +288,59 @@ class TestSchemaAwareChangeHandler(unittest.TestCase):
             handler.events_log,
             [
                 "created:inventory.users",
-                "batch:1",
+                "data:Alice",
                 "tombstone:1",
-                "batch:1",
-                "ddl",
-                "heartbeat",
+                "data:Bob",
+                "ddls:1",
+                "heartbeats:1",
             ],
         )
+
+    def test_handler_bulk_deletes_with_tombstones_produce_single_table_batch(
+        self,
+    ) -> None:
+        class BulkDeleteCollector(SchemaAwareChangeHandler):
+            def __init__(self) -> None:
+                super().__init__(converter=JsonEventConverter())
+                self.table_batches: list[TableBatch] = []
+                self.tombstone_batches: list[dict[str, ChangeBatch]] = []
+
+            def handle_change_batch(self, batch: ChangeBatch) -> None:
+                super().handle_change_batch(batch)
+                if tombstones := batch.of_kind(EventKind.TOMBSTONE):
+                    self.tombstone_batches.append(tombstones.group_by_destination())
+
+            def handle_table_batch(self, batch: TableBatch) -> None:
+                self.table_batches.append(batch)
+
+        handler = BulkDeleteCollector()
+        fields = [
+            {"type": "int32", "optional": False, "field": "id"},
+            {"type": "string", "optional": False, "field": "__op"},
+        ]
+        events: list[MockChangeEvent] = []
+        for row_id in range(1, 11):
+            events.append(
+                make_flat_event(
+                    "inventory.orders",
+                    fields,
+                    {"id": row_id, "__op": "d"},
+                    key={"id": row_id},
+                )
+            )
+            events.append(
+                MockChangeEvent(
+                    key=wrap_json_key({"id": row_id}),
+                    value=None,
+                    destination="inventory.orders",
+                )
+            )
+
+        handler.handle_batch(events)
+        self.assertEqual(len(handler.table_batches), 1)
+        self.assertEqual(len(handler.table_batches[0]), 10)
+        self.assertEqual(len(handler.tombstone_batches), 1)
+        self.assertEqual(len(handler.tombstone_batches[0]["inventory.orders"]), 10)
 
     def test_handler_hook_failure_preserves_atomic_schema_state_for_retry(self) -> None:
         class FlakyCatalogHandler(SchemaAwareChangeHandler):
