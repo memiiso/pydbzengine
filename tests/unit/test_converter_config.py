@@ -183,21 +183,25 @@ class TestEventConverterConfig(unittest.TestCase):
             ValueError,
             "Having two different schema configurations for event .* and key .* is not supported",
         ):
-            DebeziumConfig(
-                {
-                    "value.converter.schemas.enable": "true",
-                    "key.converter.schemas.enable": "false",
-                }
+            EventConverter.from_config(
+                DebeziumConfig(
+                    {
+                        "value.converter.schemas.enable": "true",
+                        "key.converter.schemas.enable": "false",
+                    }
+                )
             )
         with self.assertRaisesRegex(
             ValueError,
             "Having two different schema configurations for event .* and key .* is not supported",
         ):
-            DebeziumConfig(
-                {
-                    "converter.schemas.enable": "true",
-                    "key.converter.schemas.enable": "false",
-                }
+            EventConverter.from_config(
+                DebeziumConfig(
+                    {
+                        "converter.schemas.enable": "true",
+                        "key.converter.schemas.enable": "false",
+                    }
+                )
             )
         with self.assertRaises(ValueError):
             DebeziumConfig({"value.converter.schemas.enable": "maybe"})
@@ -341,8 +345,12 @@ class TestEventConverterConfig(unittest.TestCase):
                 format="json",
             )
         with self.assertRaisesRegex(ValueError, "Unsupported format"):
-            DebeziumConfig(
-                {"key.converter": "org.apache.kafka.connect.storage.StringConverter"}
+            EventConverter.from_config(
+                DebeziumConfig(
+                    {
+                        "key.converter": "org.apache.kafka.connect.storage.StringConverter"
+                    }
+                )
             )
         with self.assertRaisesRegex(TypeError, "Expected EventFormat or str"):
             DebeziumConfig({"value.converter": None})
@@ -447,6 +455,37 @@ class TestEventConverterConfig(unittest.TestCase):
         h_conv = DummySchemaHandler(converter=custom_conv)
         self.assertIs(h_conv.converter, custom_conv)
         self.assertEqual(h_conv.handle_batch([]), 0)
+
+        # Attaching handler with explicit converter to DebeziumEngine preserves the converter
+        _ = DebeziumEngine(properties={"name": "c_keep"}, handler=h_conv, format="json")
+        self.assertIs(h_conv.converter, custom_conv)
+        self.assertEqual(h_conv.converter.heartbeat_prefix, "standalone_hb")
+
+        # Mismatched engine format or schemaless config fails fast without overwriting converter
+        with self.assertRaisesRegex(ValueError, "does not match explicitly provided"):
+            DebeziumEngine(
+                properties={"name": "c_bad_fmt"}, handler=h_conv, format="connect"
+            )
+        self.assertIs(h_conv.converter, custom_conv)
+        with self.assertRaisesRegex(ValueError, "BasePythonChangeHandler"):
+            DebeziumEngine(
+                properties={
+                    "name": "c_schemaless",
+                    "converter.schemas.enable": "false",
+                },
+                handler=h_conv,
+            )
+        self.assertIs(h_conv.converter, custom_conv)
+
+        # Setting only value.converter.schemas.enable does not inject converter.schemas.enable
+        val_only_cfg = DebeziumConfig(
+            {"name": "c_val_only", "value.converter.schemas.enable": "false"}
+        )
+        self.assertFalse(val_only_cfg.value_schemas_enabled)
+        self.assertTrue(val_only_cfg.key_schemas_enabled)
+        self.assertNotIn(
+            "converter.schemas.enable", val_only_cfg.to_engine_properties()
+        )
 
         with self.assertRaisesRegex(ValueError, "not both"):
             DummySchemaHandler(

@@ -226,12 +226,36 @@ class EventConverter(ABC):
             raise TypeError(
                 f"Expected DebeziumConfig for config, got {type(config).__name__}"
             )
+        for key in (
+            "converter.class",
+            "value.converter",
+            "value.converter.class",
+            "key.converter",
+            "key.converter.class",
+        ):
+            if key in config.properties:
+                EventFormat.resolve_from(config.properties[key])
         if config.format is EventFormat.CONNECT:
             from pydbzengine.schema.connect import ConnectEventConverter
 
             return ConnectEventConverter(
                 heartbeat_prefix=config.heartbeat_prefix,
                 default_variable_scale=default_variable_scale,
+            )
+        has_explicit_val = "value.converter.schemas.enable" in config.properties
+        has_explicit_key = "key.converter.schemas.enable" in config.properties
+        has_general = (
+            "converter.schemas.enable" in config.properties
+            or "schemas.enable" in config.properties
+        )
+        if config.value_schemas_enabled != config.key_schemas_enabled and (
+            (has_explicit_val and has_explicit_key)
+            or (has_general and (has_explicit_val or has_explicit_key))
+        ):
+            raise ValueError(
+                "Having two different schema configurations for event "
+                f"(schemas.enable={config.value_schemas_enabled}) and key "
+                f"(schemas.enable={config.key_schemas_enabled}) is not supported."
             )
         if not config.schemas_enabled:
             raise ValueError(

@@ -113,6 +113,61 @@ class TestDebeziumEngine(unittest.TestCase):
         )
         self.assertEqual(e_direct._resolve_format(), EngineFormat.CONNECT)
 
+        # Backward-compatible Java EngineFormat classes and engine.properties / engine.format
+        e_java_conn = DebeziumEngine(
+            properties={"name": "test"}, handler=handler, format=EngineFormat.CONNECT
+        )
+        self.assertEqual(e_java_conn._resolve_format(), EngineFormat.CONNECT)
+        self.assertEqual(e_java_conn.format, EventFormat.CONNECT)
+        self.assertEqual(e_java_conn.properties["name"], "test")
+
+        e_java_json = DebeziumEngine(
+            properties={"name": "test"}, handler=handler, format=EngineFormat.JSON
+        )
+        self.assertEqual(e_java_json._resolve_format(), EngineFormat.JSON)
+        self.assertEqual(e_java_json.format, EventFormat.JSON)
+
+    def test_raw_handler_accepts_non_schema_converters_and_asymmetric_schemas(
+        self,
+    ) -> None:
+        import jpype
+
+        handler = DummyHandler()
+        e_str_conv = DebeziumEngine(
+            properties={
+                "name": "test",
+                "key.converter": "org.apache.kafka.connect.storage.StringConverter",
+            },
+            handler=handler,
+        )
+        self.assertEqual(e_str_conv.format, EventFormat.JSON)
+        self.assertEqual(
+            e_str_conv.properties["key.converter"],
+            "org.apache.kafka.connect.storage.StringConverter",
+        )
+
+        e_asym = DebeziumEngine(
+            properties={
+                "name": "test",
+                "value.converter.schemas.enable": "false",
+                "key.converter.schemas.enable": "true",
+            },
+            handler=handler,
+        )
+        self.assertFalse(e_asym.config.value_schemas_enabled)
+        self.assertTrue(e_asym.config.key_schemas_enabled)
+        self.assertNotIn(
+            "converter.schemas.enable", e_asym.config.to_engine_properties()
+        )
+
+        # Custom Java format class passthrough for non-schema handlers
+        custom_java_cls = jpype.JClass("io.debezium.engine.format.CloudEvents")
+        e_custom = DebeziumEngine(
+            properties={"name": "test"}, handler=handler, format=custom_java_cls
+        )
+        self.assertIs(e_custom.format, custom_java_cls)
+        self.assertIs(e_custom._resolve_format(), custom_java_cls)
+
     def test_format_resolution_invalid_format_raises_error(self) -> None:
         with self.assertRaisesRegex(ValueError, "Unsupported format"):
             DebeziumEngine(

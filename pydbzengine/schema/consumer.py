@@ -43,15 +43,26 @@ class SchemaAwareChangeHandler(BasePythonChangeHandler):
                 f"Expected EventConverter for converter, got {type(converter).__name__}"
             )
         self.converter: EventConverter | None = converter
+        self._explicit_converter: bool = converter is not None
         self._schemas: dict[str, TableSchema] = {}
         if config is not None:
             self.configure(config)
 
     def configure(self, config: DebeziumConfig) -> None:
-        self.converter = EventConverter.from_config(
+        resolved = EventConverter.from_config(
             config=config,
             default_variable_scale=self.default_variable_scale,
         )
+        if self._explicit_converter:
+            assert self.converter is not None
+            if resolved.format is not self.converter.format:
+                raise ValueError(
+                    f"Configured DebeziumConfig format {resolved.format.value!r} "
+                    f"does not match explicitly provided {type(self.converter).__name__} "
+                    f"format {self.converter.format.value!r}."
+                )
+            return
+        self.converter = resolved
 
     @property
     def schemas(self) -> dict[str, TableSchema]:

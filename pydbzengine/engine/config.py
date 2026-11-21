@@ -22,7 +22,7 @@ class DebeziumConfig:
     def __init__(
         self,
         properties: Mapping[str, Any] | None = None,
-        format: str | EventFormat | None = None,
+        format: str | EventFormat | Any | None = None,
         *,
         schemas_enabled: bool | None = None,
         heartbeat_prefix: str | None = None,
@@ -39,9 +39,12 @@ class DebeziumConfig:
                 f"Expected Mapping for properties, got {type(properties).__name__}"
             )
         self.properties: Mapping[str, Any] = MappingProxyType(normalized)
+        self._explicit_schemas_enabled: bool | None = schemas_enabled
         self._format = self._resolve_format(self.properties, format)
-        self._schemas_enabled = self._resolve_schemas_enabled(
-            self.properties, self._format, schemas_enabled
+        self._value_schemas_enabled, self._key_schemas_enabled = (
+            self._resolve_schemas_enabled(
+                self.properties, self._format, schemas_enabled
+            )
         )
         self._heartbeat_prefix = self._resolve_heartbeat_prefix(
             self.properties, heartbeat_prefix
@@ -52,8 +55,16 @@ class DebeziumConfig:
         return self._format
 
     @property
+    def value_schemas_enabled(self) -> bool:
+        return self._value_schemas_enabled
+
+    @property
+    def key_schemas_enabled(self) -> bool:
+        return self._key_schemas_enabled
+
+    @property
     def schemas_enabled(self) -> bool:
-        return self._schemas_enabled
+        return self._value_schemas_enabled and self._key_schemas_enabled
 
     @property
     def heartbeat_prefix(self) -> str:
@@ -66,9 +77,18 @@ class DebeziumConfig:
             for k, v in self.properties.items()
         }
         if self._format is EventFormat.JSON:
-            engine_props["converter.schemas.enable"] = (
-                "true" if self._schemas_enabled else "false"
-            )
+            if self._explicit_schemas_enabled is not None:
+                engine_props["converter.schemas.enable"] = (
+                    "true" if self._explicit_schemas_enabled else "false"
+                )
+            elif (
+                "schemas.enable" in self.properties
+                and "converter.schemas.enable" not in self.properties
+            ):
+                top = self._parse_bool(
+                    self.properties["schemas.enable"], "schemas.enable"
+                )
+                engine_props["converter.schemas.enable"] = "true" if top else "false"
         if (
             "topic.heartbeat.prefix" in self.properties
             or self._heartbeat_prefix != self.DEFAULT_HEARTBEAT_PREFIX
@@ -76,27 +96,34 @@ class DebeziumConfig:
             engine_props["topic.heartbeat.prefix"] = self._heartbeat_prefix
         return engine_props
 
+    @staticmethod
+    def _try_resolve_converter_format(raw: Any) -> EventFormat | None:
+        try:
+            return EventFormat.resolve_from(raw)
+        except ValueError:
+            return None
+
     @classmethod
     def _resolve_format(
         cls,
         properties: Mapping[str, Any],
-        format: str | EventFormat | None,
+        format: str | EventFormat | Any | None,
     ) -> EventFormat:
         general = (
-            EventFormat.resolve_from(properties["converter.class"])
+            cls._try_resolve_converter_format(properties["converter.class"])
             if "converter.class" in properties
             else None
         )
         val_fmt: EventFormat | None = None
         for key in ("value.converter", "value.converter.class"):
             if key in properties:
-                val_fmt = EventFormat.resolve_from(properties[key])
+                val_fmt = cls._try_resolve_converter_format(properties[key])
                 break
 
         key_fmt: EventFormat | None = None
         for key in ("key.converter", "key.converter.class"):
             if key in properties:
-                key_fmt = EventFormat.resolve_from(properties[key])
+                key_fmt = cls._try_resolve_converter_format(properties[key])
                 break
 
         if val_fmt is not None and key_fmt is not None and val_fmt is not key_fmt:
@@ -169,7 +196,7 @@ class DebeziumConfig:
         properties: Mapping[str, Any],
         event_format: EventFormat,
         schemas_enabled: bool | None,
-    ) -> bool:
+    ) -> tuple[bool, bool]:
         if schemas_enabled is not None and not isinstance(schemas_enabled, bool):
             raise TypeError(
                 f"Expected bool for schemas_enabled, got {type(schemas_enabled).__name__}"
@@ -179,7 +206,7 @@ class DebeziumConfig:
                 raise ValueError(
                     "EventFormat.CONNECT always carries schemas; schemas_enabled=False is not supported."
                 )
-            return True
+            return True, True
 
         conv = (
             cls._parse_bool(
@@ -216,19 +243,17 @@ class DebeziumConfig:
             if "key.converter.schemas.enable" in properties
             else general
         )
-        if val is not None and key is not None and val != key:
-            raise ValueError(
-                "Having two different schema configurations for event "
-                f"(schemas.enable={val}) and key (schemas.enable={key}) is not supported."
-            )
 
-        prop_enabled = val if val is not None else key
         if schemas_enabled is not None:
-            if prop_enabled is not None and prop_enabled != schemas_enabled:
-                raise ValueError(
-                    f"Conflicting schema configuration: explicit schemas_enabled={schemas_enabled} "
-                    f"does not match property schemas.enable={prop_enabled}."
-                )
-            return schemas_enabled
+            for side_val in (val, key):
+                if side_val is not None and side_val != schemas_enabled:
+                    raise ValueError(
+                        f"Conflicting schema configuration: explicit schemas_enabled={schemas_enabled} "
+                        f"does not match property schemas.enable={side_val}."
+                    )
+            return schemas_enabled, schemas_enabled
 
-        return prop_enabled if prop_enabled is not None else True
+        return (
+            val if val is not None else True,
+            key if key is not None else True,
+        )

@@ -18,10 +18,12 @@ class EventFormat(str, Enum):
     CONNECT = "connect"
 
     @classmethod
-    def resolve_from(cls, format: str | EventFormat) -> EventFormat:
-        """Resolves an EventFormat from a string or enum value."""
+    def resolve_from(cls, format: str | EventFormat | Any) -> EventFormat:
+        """Resolves an EventFormat from a string, enum value, or Java EngineFormat class."""
         if isinstance(format, cls):
             return format
+        if isinstance(format, type) and type(format).__name__ == "_JClass":
+            format = format.__name__
         if not isinstance(format, str):
             raise TypeError(
                 f"Expected EventFormat or str for format, got {type(format).__name__}: {format!r}"

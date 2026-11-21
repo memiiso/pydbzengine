@@ -23,7 +23,7 @@ class DebeziumEngine(LoggingMixin):
         self,
         properties: Mapping[str, Any] | DebeziumConfig,
         handler: BasePythonChangeHandler,
-        format: str | EventFormat | None = None,
+        format: str | EventFormat | Any | None = None,
         jvm_opts: list[str] | None = None,
         extra_classpaths: list[str] | None = None,
         jvm_path: str | None = None,
@@ -41,6 +41,7 @@ class DebeziumEngine(LoggingMixin):
         self.extra_classpaths = extra_classpaths
         self.jvm_path = jvm_path
         self._engine: Any = None
+        self._custom_format: Any = None
         if isinstance(properties, DebeziumConfig):
             if format is not None:
                 resolved_fmt = EventFormat.resolve_from(format)
@@ -50,11 +51,42 @@ class DebeziumEngine(LoggingMixin):
                         f"does not match DebeziumConfig format {properties.format.value!r}."
                     )
             self.config = properties
+        elif isinstance(format, type) and type(format).__name__ == "_JClass":
+            try:
+                resolved_fmt = EventFormat.resolve_from(format)
+            except ValueError:
+                self._custom_format = format
+                self.config = DebeziumConfig(properties=properties)
+            else:
+                self.config = DebeziumConfig(properties=properties, format=resolved_fmt)
         else:
             self.config = DebeziumConfig(properties=properties, format=format)
 
         if isinstance(self.handler, BasePythonChangeHandler):
-            self.handler.configure(config=self.config)
+            if self._custom_format is not None:
+                if (
+                    type(self.handler).configure
+                    is not BasePythonChangeHandler.configure
+                ):
+                    raise ValueError(
+                        f"Unsupported format for {type(self.handler).__name__}: {self._custom_format!r}"
+                    )
+            else:
+                self.handler.configure(config=self.config)
+
+    @property
+    def properties(self) -> Mapping[str, Any]:
+        """Returns the normalized Debezium configuration properties."""
+        return self.config.properties
+
+    @property
+    def format(self) -> Any:
+        """Returns the resolved wire format (EventFormat or custom Java format class)."""
+        return (
+            self._custom_format
+            if self._custom_format is not None
+            else self.config.format
+        )
 
     @cached_property
     def consumer(self) -> PythonChangeConsumer:
@@ -64,6 +96,8 @@ class DebeziumEngine(LoggingMixin):
         return PythonChangeConsumer()
 
     def _resolve_format(self) -> Any:
+        if self._custom_format is not None:
+            return self._custom_format
         self._ensure_jvm_started()
         from pydbzengine.engine._jvm import EngineFormat
 

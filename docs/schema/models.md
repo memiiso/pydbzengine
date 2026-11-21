@@ -159,3 +159,7 @@ arrow_table = pa.table(batch)
 
 !!! tip "Preserving Debezium Logical Type Metadata"
     Logical types whose wire representation already matches a standard primitive or nested container (such as `io.debezium.data.Uuid`, `io.debezium.data.Json`, `io.debezium.data.geometry.Geometry`, `io.debezium.data.geometry.Point`, `io.debezium.data.vector.FloatVector`, and `io.debezium.data.Hstore`) compile cleanly through the corresponding standard handler while preserving their full Debezium logical type name in `pa.Field.metadata[b"debezium.logical_type"]`.
+
+!!! note "Decimal Precision & JSON Null-Default Parity"
+    - Fixed and variable decimals compile to `pa.decimal128(precision, scale)` (`1 <= precision <= 38`, `0 <= scale <= precision`), matching Arrow/Iceberg lakehouse conventions. Higher-precision source columns (>38 digits) fail fast unless configured with `decimal.handling.mode=string` or `double`.
+    - In `"connect"` mode, `ConnectEventConverter` reads struct fields via `getWithoutDefault()` so explicit `NULL`s on nullable columns with SQL `DEFAULT` clauses stay `None`. In `"json"` mode, Kafka Connect's `JsonConverter` defaults to `replace.null.with.default=true`; set `"converter.replace.null.with.default": "false"` if you want identical `NULL` preservation in JSON mode.
