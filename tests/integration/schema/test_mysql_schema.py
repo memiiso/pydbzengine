@@ -201,7 +201,7 @@ class TestMySqlSchemaIntegration(BaseMySqlTest):
         after_struct = table_schema.arrow_schema.field("after").type
         self.assertTrue(pa.types.is_struct(after_struct))
         self.assertEqual(after_struct.field("col_id").type, pa.int32())
-        self.assertEqual(after_struct.field("col_tinyint").type, pa.int16())
+        self.assertEqual(after_struct.field("col_tinyint").type, pa.int8())
         self.assertEqual(after_struct.field("col_smallint").type, pa.int16())
         self.assertEqual(after_struct.field("col_mediumint").type, pa.int32())
         self.assertEqual(after_struct.field("col_int").type, pa.int32())
